@@ -313,29 +313,14 @@ export default function AsientosExtracontablesPage() {
         const paisNombre = String(getVal(row, 'Pais', 'pais', 'PAIS', 'Country', 'COUNTRY') || '').trim();
         const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Cia', 'CIA', 'Company', 'COMPANY') || '').trim();
 
-        const orgMatch = findEntity(orgNombre, organizaciones);
-        const paisMatch = findEntity(paisNombre, paises);
-        let ciaMatch = findEntity(ciaNombre, companias);
-        const ccMatch = findEntity(centroCostoNom, centrosCostos);
+        // Ubicaciones: se omiten completamente — importar sin IDs de ubicación
+        const orgMatch = null;
+        const paisMatch = null;
+        let ciaMatch = null;
+        const ccMatch = null;
 
-        // Inferir compañía del CC si no se encontró directo
-        if (!ciaMatch && ciaNombre && centroCostoNom) {
-          for (const c of companias) {
-            if (normalizeText(centroCostoNom).includes(normalizeText(c.nombre)) || normalizeText(centroCostoNom).includes(normalizeText(c.codigo))) {
-              ciaMatch = c;
-              break;
-            }
-          }
-        }
-
-        // Validar
+        // Validar solo que cuenta_contable exista
         const errores: string[] = [];
-        if (orgNombre && !orgMatch) errores.push(`Org "${orgNombre}" no encontrada`);
-        if (paisNombre && !paisMatch) errores.push(`País "${paisNombre}" no encontrado`);
-        if (!ciaNombre) errores.push('Compañía requerida');
-        else if (!ciaMatch) errores.push(`Cía "${ciaNombre}" no encontrada`);
-        if (centroCostoNom && !ccMatch) errores.push(`CC "${centroCostoNom}" no encontrado`);
-
         const rowValido = errores.length === 0;
         if (!rowValido) invalidos++;
 
@@ -360,9 +345,6 @@ export default function AsientosExtracontablesPage() {
           empresa: empresaVal || null,
           paquete: paqueteVal || null,
           activa: true,
-          ...(orgMatch ? { organizacion_id: orgMatch.id } : {}),
-          ...(ciaMatch ? { compania_id: ciaMatch.id } : {}),
-          ...(ccMatch ? { centro_costo_id: ccMatch.id } : {}),
         };
         batchToInsert.push(rowData);
 
@@ -382,15 +364,15 @@ export default function AsientosExtracontablesPage() {
           empresa: empresaVal,
           paquete: paqueteVal,
           org_nombre: orgNombre,
-          org_id: orgMatch?.id || null,
+          org_id: null,
           pais_nombre: paisNombre,
-          pais_id: paisMatch?.id || null,
+          pais_id: null,
           cia_nombre: ciaNombre,
-          cia_id: ciaMatch?.id || null,
+          cia_id: null,
           cc_nombre: centroCostoNom,
-          cc_id: ccMatch?.id || null,
-          valido: rowValido,
-          error: rowValido ? null : errores.join('; '),
+          cc_id: null,
+          valido: true,
+          error: null,
         });
       }
 

@@ -154,7 +154,13 @@ export default function ImportPreviewModal({
                 {previewRows.map((row, idx) => (
                   <tr
                     key={idx}
-                    className={`border-t border-slate-100 ${row.valido ? 'hover:bg-slate-50' : 'bg-red-50'}`}
+                    className={`border-t border-slate-100 ${
+                      !row.valido
+                        ? 'bg-red-50'
+                        : row.error
+                          ? 'bg-amber-50'
+                          : 'hover:bg-slate-50'
+                    }`}
                   >
                     <td className="py-2 px-3 text-slate-500 text-xs whitespace-nowrap">{idx + 1}</td>
                     <td className="py-2 px-3 text-slate-900 font-medium whitespace-nowrap">{row.cuenta || '-'}</td>
@@ -207,12 +213,16 @@ export default function ImportPreviewModal({
                       )}
                     </td>
                     <td className="py-2 px-3 whitespace-nowrap">
-                      {row.valido ? (
+                      {row.valido && !row.error ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">
                           <i className="ri-check-line"></i> Válido
                         </span>
+                      ) : row.valido && row.error ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700 max-w-[220px] truncate" title={row.error}>
+                          <i className="ri-alert-line"></i> {row.error}
+                        </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-700">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-700 max-w-[220px] truncate" title={row.error || 'Inválido'}>
                           <i className="ri-close-line"></i> {row.error || 'Inválido'}
                         </span>
                       )}

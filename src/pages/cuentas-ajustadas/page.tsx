@@ -354,31 +354,16 @@ export default function CuentasAjustadasPage() {
         const ciaNombre = String(getVal(row, 'COMPANIA', 'Compania', 'compania', 'Cia', 'CIA', 'Compañía', 'COMPAÑÍA') || '').trim();
         const ccNombre = String(getVal(row, 'CENTRO_COSTO', 'Centro_Costo', 'centro_costo', 'Centro Costo', 'CC', 'Cc') || '').trim();
 
-        const organizacion_id = orgNombre ? orgLookup.get(normalizeStr(orgNombre)) || null : null;
-        const pais_id = paisNombre ? paisLookup.get(normalizeStr(paisNombre)) || null : null;
-        const compania_id = ciaNombre ? ciaLookup.get(normalizeStr(ciaNombre)) || null : null;
-        const centro_costo_id = ccNombre ? ccLookup.get(normalizeStr(ccNombre)) || null : null;
+        const organizacion_id = null;
+        const pais_id = null;
+        const compania_id = null;
+        const centro_costo_id = null;
 
-        // Validation
+        // Validation — solo cuenta/descripción requeridas
         const errores: string[] = [];
         if (!cuenta_contable || !descripcion) {
           skipped++;
           errores.push('Sin cuenta o descripción');
-        }
-        if (!compania_id) {
-          missingCia++;
-          errores.push('Sin compañía');
-        }
-
-        // Check for asiento_id duplicates within the batch
-        let isDuplicate = false;
-        if (asientoId) {
-          const count = (asientoCount.get(asientoId) || 0) + 1;
-          asientoCount.set(asientoId, count);
-          if (count > 1) {
-            isDuplicate = true;
-            errores.push('Asiento duplicado en lote');
-          }
         }
 
         const valido = errores.length === 0;

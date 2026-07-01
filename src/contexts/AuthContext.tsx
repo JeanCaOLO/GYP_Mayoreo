@@ -132,10 +132,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const rol = user?.rol || 'viewer';
-  const isSuperAdmin = rol === 'super_admin';
-  const isAdmin = rol === 'super_admin' || rol === 'admin';
-  const isEditor = rol === 'super_admin' || rol === 'admin' || rol === 'editor';
-  const isViewer = true; // todos pueden ver
+  // Todos los usuarios operan como super_admin — sin restricción de roles
+  const isSuperAdmin = true;
+  const isAdmin = true;
+  const isEditor = true;
+  const isViewer = true;
 
   const userScope: UserScope = useMemo(() => ({
     pais_id: user?.pais_id || null,
@@ -145,8 +146,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const hasScope = userScope.pais_id !== null || userScope.compania_id !== null || userScope.organizacion_id !== null;
 
-  const canEdit = rol === 'super_admin' || rol === 'admin' || rol === 'editor';
-  const canDelete = rol === 'super_admin' || rol === 'admin';
+  const canEdit = true;
+  const canDelete = true;
 
   return (
     <AuthContext.Provider value={{

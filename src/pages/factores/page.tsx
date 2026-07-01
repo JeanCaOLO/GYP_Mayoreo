@@ -567,21 +567,7 @@ export default function FactoresPage() {
         const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Cia', 'CIA') || '').trim();
         const ccNombre = String(getVal(row, 'Centro_Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'CC') || '').trim();
 
-        const orgMatch = findEntity(orgNombre, organizaciones);
-        const paisMatch = findEntity(paisNombre, paises);
-        const ciaMatch = findEntity(ciaNombre, companias);
-        const ccMatch = findEntity(ccNombre, centrosCostos);
-
-        const simboloMoneda = paisMatch?.simbolo_moneda || '';
-
         const tipoExiste = tiposExistentesSet.has(tipoVal);
-        const errores: string[] = [];
-        if (orgNombre && !orgMatch) errores.push(`Org "${orgNombre}" no encontrada`);
-        if (paisNombre && !paisMatch) errores.push(`País "${paisNombre}" no encontrado`);
-        if (ciaNombre && !ciaMatch) errores.push(`Cía "${ciaNombre}" no encontrada`);
-        if (ccNombre && !ccMatch) errores.push(`CC "${ccNombre}" no encontrado`);
-
-        const rowValido = errores.length === 0;
 
         const rowData: Record<string, unknown> = {
           tipo: tipoVal,
@@ -589,10 +575,10 @@ export default function FactoresPage() {
           fecha: fechaVal,
           descripcion: descripcionVal || null,
           activa: true,
-          organizacion_id: orgMatch?.id || null,
-          pais_id: paisMatch?.id || null,
-          compania_id: ciaMatch?.id || null,
-          centro_costo_id: ccMatch?.id || null,
+          organizacion_id: null,
+          pais_id: null,
+          compania_id: null,
+          centro_costo_id: null,
         };
         batchToInsert.push(rowData);
 
@@ -603,16 +589,16 @@ export default function FactoresPage() {
           fecha: fechaVal,
           descripcion: descripcionVal,
           org_nombre: orgNombre,
-          org_id: orgMatch?.id || null,
+          org_id: null,
           pais_nombre: paisNombre,
-          pais_id: paisMatch?.id || null,
+          pais_id: null,
           cia_nombre: ciaNombre,
-          cia_id: ciaMatch?.id || null,
+          cia_id: null,
           cc_nombre: ccNombre,
-          cc_id: ccMatch?.id || null,
-          simbolo_moneda: simboloMoneda,
-          valido: rowValido,
-          error: rowValido ? null : errores.join('; '),
+          cc_id: null,
+          simbolo_moneda: '',
+          valido: true,
+          error: null,
         });
       }
 
