@@ -1111,14 +1111,14 @@ export default function FactoresPage() {
       {renameTipoOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50" onClick={() => setRenameTipoOpen(false)} />
-          <div className="relative w-full max-w-md rounded-xl bg-white shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+          <div className="relative w-full max-w-md max-h-[90vh] rounded-xl bg-white shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 shrink-0">
               <h3 className="text-lg font-semibold text-slate-900">Renombrar Tipo de Tasa</h3>
               <button onClick={() => setRenameTipoOpen(false)} className="rounded-lg p-1 hover:bg-slate-100">
                 <i className="ri-close-line text-xl text-slate-500 w-6 h-6 flex items-center justify-center"></i>
               </button>
             </div>
-            <div className="p-6 space-y-4">
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Tipo a renombrar</label>
                 <select
@@ -1160,7 +1160,7 @@ export default function FactoresPage() {
                 </div>
               )}
             </div>
-            <div className="p-6 border-t border-slate-100 flex justify-end gap-3">
+            <div className="p-6 border-t border-slate-100 flex justify-end gap-3 shrink-0">
               <button onClick={() => setRenameTipoOpen(false)} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 transition-colors">Cancelar</button>
               <button
                 onClick={handleRenameTipo}
@@ -1268,14 +1268,14 @@ function FactorModal({ item, tiposExistentes, organizaciones, paises, companias,
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-xl bg-white shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+      <div className="relative w-full max-w-md max-h-[90vh] rounded-xl bg-white shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 shrink-0">
           <h3 className="text-lg font-semibold text-slate-900">{item ? 'Editar Tasa' : 'Nueva Tasa'}</h3>
           <button onClick={onClose} className="rounded-lg p-1 hover:bg-slate-100">
             <i className="ri-close-line text-xl text-slate-500 w-6 h-6 flex items-center justify-center"></i>
           </button>
         </div>
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 overflow-y-auto flex-1">
           {/* Tipo de Tasa: dropdown de existentes + opción de crear nuevo */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Tipo de Tasa *</label>
@@ -1399,7 +1399,7 @@ function FactorModal({ item, tiposExistentes, organizaciones, paises, companias,
             </div>
           )}
         </div>
-        <div className="p-6 border-t border-slate-100 flex justify-end gap-3">
+        <div className="p-6 border-t border-slate-100 flex justify-end gap-3 shrink-0">
           <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 transition-colors">Cancelar</button>
           <button onClick={handleSave} className="rounded-lg px-4 py-2 text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">Guardar</button>
         </div>

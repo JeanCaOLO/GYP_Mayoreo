@@ -37,10 +37,23 @@ export function UbicacionesProvider({ children }: { children: ReactNode }) {
         supabase.from('companias').select('*').order('nombre'),
         supabase.from('centros_costos').select('*').order('nombre'),
       ]);
+
+      if (orgRes.error) console.error('organizaciones error:', orgRes.error.message);
+      if (paisesRes.error) console.error('paises error:', paisesRes.error.message);
+      if (compRes.error) console.error('companias error:', compRes.error.message);
+      if (centrosRes.error) console.error('centros_costos error:', centrosRes.error.message);
+
       if (orgRes.data) setOrganizaciones(orgRes.data as Organizacion[]);
       if (paisesRes.data) setPaises(paisesRes.data as Pais[]);
       if (compRes.data) setCompanias(compRes.data as Compania[]);
       if (centrosRes.data) setCentrosCostos(centrosRes.data as CentroCosto[]);
+
+      console.log('Ubicaciones cargadas:', {
+        organizaciones: orgRes.data?.length ?? 0,
+        paises: paisesRes.data?.length ?? 0,
+        companias: compRes.data?.length ?? 0,
+        centros_costos: centrosRes.data?.length ?? 0,
+      });
     } catch (err) {
       console.error('Error fetching ubicaciones:', err);
     } finally {
@@ -48,7 +61,36 @@ export function UbicacionesProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // Fetch inicial — espera a que haya sesión activa
+  useEffect(() => {
+    let cancelled = false;
+
+    const init = async () => {
+      // Esperar sesión activa antes de cargar
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session || cancelled) return;
+      fetchData();
+    };
+
+    init();
+
+    // También refetch cuando cambie el estado de auth (login/logout)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session && !cancelled) {
+        fetchData();
+      } else if (!session) {
+        setOrganizaciones([]);
+        setPaises([]);
+        setCompanias([]);
+        setCentrosCostos([]);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
+  }, [fetchData]);
 
   const organizacionesMap = useMemo(() => {
     const map = new Map<string, string>();
