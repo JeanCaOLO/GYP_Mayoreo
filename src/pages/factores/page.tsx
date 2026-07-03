@@ -235,8 +235,14 @@ export default function FactoresPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const factoresRes = await supabase.from('factores').select('*').order('fecha', { ascending: false });
+    // Agregar timestamp para evitar caché del cliente Supabase
+    const factoresRes = await supabase
+      .from('factores')
+      .select('*')
+      .order('fecha', { ascending: false })
+      .gt('created_at', '1970-01-01'); // fuerza query única cada vez
     if (factoresRes.data) setFactores(factoresRes.data as Factor[]);
+    if (factoresRes.error) console.error('fetchData error:', factoresRes.error);
     setLoading(false);
   }, []);
 
@@ -319,37 +325,83 @@ export default function FactoresPage() {
   }, [factores, tiposSeleccionados]);
 
   const handleSave = async (formData: Record<string, unknown>) => {
+    console.log('>>> PAGE handleSave recibido:', formData, 'editing:', editing?.id);
     try {
+      // Normalizar FKs vacíos a null
+      const clean = (val: unknown) => (val === '' || val === undefined ? null : val);
+
       if (editing) {
+        const payload = {
+          tipo:            String(formData.tipo || ''),
+          valor:           Number(formData.valor),
+          fecha:           String(formData.fecha || ''),
+          descripcion:     formData.descripcion ? String(formData.descripcion) : null,
+          activa:          Boolean(formData.activa),
+          organizacion_id: clean(formData.organizacion_id) as string | null,
+          pais_id:         clean(formData.pais_id) as string | null,
+          compania_id:     clean(formData.compania_id) as string | null,
+          centro_costo_id: clean(formData.centro_costo_id) as string | null,
+        };
+
+        console.log('>>> EJECUTANDO UPDATE id:', editing.id, 'payload:', payload);
+
+        const resp = await supabase
+          .from('factores')
+          .update(payload)
+          .eq('id', editing.id);
+
+        console.log('>>> UPDATE RESPONSE:', resp.status, resp.statusText, resp.error);
+
+        if (resp.error) throw resp.error;
+
         const valorAnterior = editing.valor;
-        await supabase.from('factores_historico').insert({
+        supabase.from('factores_historico').insert({
           factor_id: editing.id,
           valor_anterior: valorAnterior,
-          valor_nuevo: formData.valor,
-          fecha: formData.fecha as string,
-          tipo: formData.tipo as string,
-          descripcion: (formData.descripcion as string) || null,
+          valor_nuevo: payload.valor,
+          fecha: payload.fecha,
+          tipo: payload.tipo,
+          descripcion: payload.descripcion || null,
+        }).then(({ error: hErr }) => {
+          if (hErr) console.error('historial error:', hErr.message);
         });
 
-        const { error } = await supabase.from('factores').update(formData).eq('id', editing.id);
-        if (error) throw error;
         addToast('success', 'Tasa actualizada');
       } else {
-        const { data, error } = await supabase.from('factores').insert(formData).select('id').single();
+        const payload = {
+          tipo:            String(formData.tipo || ''),
+          valor:           Number(formData.valor),
+          fecha:           String(formData.fecha || ''),
+          descripcion:     formData.descripcion ? String(formData.descripcion) : null,
+          activa:          Boolean(formData.activa),
+          organizacion_id: clean(formData.organizacion_id) as string | null,
+          pais_id:         clean(formData.pais_id) as string | null,
+          compania_id:     clean(formData.compania_id) as string | null,
+          centro_costo_id: clean(formData.centro_costo_id) as string | null,
+        };
+
+        const { data, error } = await supabase
+          .from('factores')
+          .insert(payload)
+          .select('id')
+          .single();
         if (error) throw error;
 
         if (data) {
-          await supabase.from('factores_historico').insert({
+          supabase.from('factores_historico').insert({
             factor_id: data.id,
             valor_anterior: null,
-            valor_nuevo: formData.valor as number,
-            fecha: formData.fecha as string,
-            tipo: formData.tipo as string,
+            valor_nuevo: payload.valor,
+            fecha: payload.fecha,
+            tipo: payload.tipo,
             descripcion: 'Creación de la tasa',
+          }).then(({ error: hErr }) => {
+            if (hErr) console.error('historial error:', hErr.message);
           });
         }
         addToast('success', 'Tasa creada');
       }
+
       setModalOpen(false);
       setEditing(null);
       fetchData();
@@ -1260,9 +1312,25 @@ function FactorModal({ item, tiposExistentes, organizaciones, paises, companias,
   };
 
   const handleSave = () => {
+    console.log('>>> BOTON GUARDAR CLICKED', { tipoInput, form });
     const tipoFinal = tipoInput.trim();
-    if (!tipoFinal || form.valor <= 0 || !form.fecha) return;
-    onSave({ ...form, tipo: tipoFinal });
+    if (!tipoFinal) {
+      console.log('>>> BLOQUEADO: tipoFinal vacío');
+      alert('Falta el tipo de tasa');
+      return;
+    }
+    if (!form.fecha) {
+      console.log('>>> BLOQUEADO: fecha vacía');
+      alert('Falta la fecha');
+      return;
+    }
+    if (!form.valor || form.valor <= 0 || isNaN(Number(form.valor))) {
+      console.log('>>> BLOQUEADO: valor inválido', form.valor);
+      alert('El valor debe ser mayor a 0');
+      return;
+    }
+    console.log('>>> LLAMANDO onSave con:', { ...form, tipo: tipoFinal, valor: Number(form.valor) });
+    onSave({ ...form, tipo: tipoFinal, valor: Number(form.valor) });
   };
 
   return (
@@ -1321,8 +1389,11 @@ function FactorModal({ item, tiposExistentes, organizaciones, paises, companias,
               <input
                 type="number"
                 step="0.000001"
-                value={form.valor || ''}
-                onChange={(e) => setForm({ ...form, valor: Number(e.target.value) })}
+                value={form.valor === 0 ? '' : form.valor}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setForm({ ...form, valor: v === '' ? 0 : Number(v) });
+                }}
                 className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                 placeholder="0.00"
                 required

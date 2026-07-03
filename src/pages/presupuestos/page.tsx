@@ -641,14 +641,14 @@ function CargaModal({ paises, centrosCostos, onClose, onSave }: { paises: Pais[]
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-full max-w-lg rounded-xl bg-white shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+      <div className="relative w-full max-w-lg max-h-[90vh] rounded-xl bg-white shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 shrink-0">
           <h3 className="text-lg font-semibold text-slate-900">Nueva Carga</h3>
           <button onClick={onClose} className="rounded-lg p-1 hover:bg-slate-100">
             <i className="ri-close-line text-xl text-slate-500 w-6 h-6 flex items-center justify-center"></i>
           </button>
         </div>
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 overflow-y-auto flex-1">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Nombre *</label>
             <input type="text" value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="Ej: Presupuesto 2026" required />
@@ -674,7 +674,7 @@ function CargaModal({ paises, centrosCostos, onClose, onSave }: { paises: Pais[]
             </div>
           </div>
         </div>
-        <div className="p-6 border-t border-slate-100 flex justify-end gap-3">
+        <div className="p-6 border-t border-slate-100 flex justify-end gap-3 shrink-0">
           <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 transition-colors">Cancelar</button>
           <button onClick={() => onSave(form)} className="rounded-lg px-4 py-2 text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">Guardar</button>
         </div>
