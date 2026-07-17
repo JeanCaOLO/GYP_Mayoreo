@@ -122,6 +122,235 @@ export default function CatalogoPage() {
     inactivas: items.filter((i) => !i.activa).length,
   };
 
+  // --- EXPORTAR CATÁLOGO COMPLETO ---
+  const handleExportCatalogo = async () => {
+    try {
+      setImportProgress('Exportando...');
+      const xlsx = await import('xlsx');
+
+      // Traer todos los registros desde BD
+      const { data, error } = await supabase
+        .from('catalogo_gyp')
+        .select('*')
+        .order('cuenta', { ascending: true });
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        addToast('warning', 'No hay registros en el catálogo para exportar.');
+        setImportProgress(null);
+        return;
+      }
+
+      const headers = [
+        'ID', 'Linea', 'Grupo', 'Cuenta', 'Descripcion', 'Saldo Normal',
+        'Comercializadora', 'Balance_GyP', 'Clasificacion', 'Clasificacion 1',
+        'Clasificacion 2', 'Orden Clasificacion', 'Activa',
+      ];
+
+      const rows = data.map((item: Record<string, unknown>) => [
+        item.id,
+        item.linea ?? '',
+        item.grupo ?? '',
+        item.cuenta ?? '',
+        item.descripcion ?? '',
+        item.saldo_normal ?? '',
+        item.comercializadora ?? '',
+        item.balance_gyp ?? '',
+        item.clasificacion ?? '',
+        item.clasificacion_1 ?? '',
+        item.clasificacion_2 ?? '',
+        item.orden_clasificacion ?? '',
+        item.activa ? 'SI' : 'NO',
+      ]);
+
+      const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = headers.map(() => ({ wch: 20 }));
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Catalogo GYP');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Catalogo_GYP_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      addToast('success', `${data.length} registros exportados`);
+    } catch (err) {
+      addToast('error', 'Error al exportar: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+    }
+  };
+
+  // --- ACTUALIZACIÓN MASIVA ---
+  const handleMassUpdate = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportProgress('Leyendo archivo para actualizar...');
+    try {
+      const xlsx = await import('xlsx');
+      const data = await file.arrayBuffer();
+      const workbook = xlsx.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+
+      if (json.length === 0) {
+        addToast('warning', 'El archivo está vacío.');
+        setImportProgress(null);
+        return;
+      }
+
+      // Normalizar header
+      const normalizeHeader = (h: string) =>
+        String(h).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_\/]+/g, '').trim();
+
+      const rawHeaders = Object.keys(json[0]);
+      const headerMap: Record<string, string> = {};
+      rawHeaders.forEach((h) => { headerMap[normalizeHeader(h)] = h; });
+
+      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
+        for (const v of variants) {
+          const norm = normalizeHeader(v);
+          const originalKey = headerMap[norm];
+          if (originalKey && originalKey in row && row[originalKey] !== '' && row[originalKey] !== null && row[originalKey] !== undefined) {
+            return row[originalKey];
+          }
+        }
+        return undefined;
+      };
+
+      // Verificar que tenga columna ID
+      const idTest = getVal(json[0], 'ID', 'id', 'Id');
+      if (idTest === undefined) {
+        addToast('error', 'El archivo debe tener la columna "ID" para identificar los registros. Usá "Exportar Catálogo" para obtener el archivo con IDs.');
+        setImportProgress(null);
+        return;
+      }
+
+      // Traer datos actuales de la BD para comparar
+      setImportProgress('Comparando con datos actuales...');
+      const { data: currentData, error: fetchErr } = await supabase
+        .from('catalogo_gyp')
+        .select('*');
+
+      if (fetchErr) throw fetchErr;
+
+      const currentMap = new Map<string, Record<string, unknown>>();
+      (currentData || []).forEach((item: Record<string, unknown>) => {
+        currentMap.set(item.id as string, item);
+      });
+
+      // Campos editables que se comparan
+      const editableFields = [
+        { excel: ['Linea', 'linea', 'LINEA'], db: 'linea', type: 'number' },
+        { excel: ['Grupo', 'grupo', 'GRUPO'], db: 'grupo', type: 'number' },
+        { excel: ['Cuenta', 'cuenta', 'CUENTA'], db: 'cuenta', type: 'string' },
+        { excel: ['Descripcion', 'descripcion', 'DESCRIPCION'], db: 'descripcion', type: 'string' },
+        { excel: ['Saldo Normal', 'saldo_normal', 'SaldoNormal'], db: 'saldo_normal', type: 'string' },
+        { excel: ['Comercializadora', 'comercializadora', 'COMERCIALIZADORA'], db: 'comercializadora', type: 'string' },
+        { excel: ['Balance_GyP', 'Balance GyP', 'balance_gyp', 'BalanceGyP'], db: 'balance_gyp', type: 'string' },
+        { excel: ['Clasificacion', 'clasificacion', 'CLASIFICACION'], db: 'clasificacion', type: 'string' },
+        { excel: ['Clasificacion 1', 'Clasificacion1', 'clasificacion_1'], db: 'clasificacion_1', type: 'string' },
+        { excel: ['Clasificacion 2', 'Clasificacion2', 'clasificacion_2'], db: 'clasificacion_2', type: 'string' },
+        { excel: ['Orden Clasificacion', 'orden_clasificacion', 'OrdenClasificacion'], db: 'orden_clasificacion', type: 'number' },
+        { excel: ['Activa', 'activa', 'ACTIVA'], db: 'activa', type: 'boolean' },
+      ];
+
+      let updated = 0;
+      let skipped = 0;
+      let noChanges = 0;
+      let errors = 0;
+      const BATCH_SIZE = 100;
+      const updates: { id: string; changes: Record<string, unknown> }[] = [];
+
+      for (const row of json) {
+        const id = String(getVal(row, 'ID', 'id', 'Id') || '').trim();
+        if (!id) { skipped++; continue; }
+
+        const current = currentMap.get(id);
+        if (!current) { skipped++; continue; }
+
+        const changes: Record<string, unknown> = {};
+
+        for (const field of editableFields) {
+          const excelVal = getVal(row, ...field.excel);
+          if (excelVal === undefined) continue; // columna no presente en Excel
+
+          let newVal: unknown;
+          let oldVal = current[field.db];
+
+          if (field.type === 'number') {
+            newVal = excelVal === '' || excelVal === null ? null : Number(excelVal);
+            if (newVal !== null && isNaN(newVal as number)) newVal = null;
+          } else if (field.type === 'boolean') {
+            const s = String(excelVal).toLowerCase().trim();
+            newVal = s === 'si' || s === 'sí' || s === 'true' || s === '1' || s === 'yes';
+          } else {
+            newVal = String(excelVal).trim() || null;
+          }
+
+          // Normalizar para comparar
+          const oldNorm = oldVal === null || oldVal === undefined ? null : field.type === 'number' ? Number(oldVal) : field.type === 'boolean' ? Boolean(oldVal) : String(oldVal).trim();
+          const newNorm = newVal === null ? null : field.type === 'number' ? Number(newVal) : field.type === 'boolean' ? Boolean(newVal) : String(newVal).trim();
+
+          if (String(oldNorm ?? '') !== String(newNorm ?? '')) {
+            changes[field.db] = newVal;
+          }
+        }
+
+        if (Object.keys(changes).length > 0) {
+          updates.push({ id, changes });
+        } else {
+          noChanges++;
+        }
+      }
+
+      if (updates.length === 0) {
+        addToast('info', `No se encontraron cambios. ${noChanges} registros sin modificaciones, ${skipped} omitidos.`);
+        setImportProgress(null);
+        return;
+      }
+
+      // Ejecutar updates en batches
+      setImportProgress(`Actualizando ${updates.length} registros...`);
+      for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+        const batch = updates.slice(i, i + BATCH_SIZE);
+        setImportProgress(`Actualizando ${Math.min(i + BATCH_SIZE, updates.length)} de ${updates.length}...`);
+
+        for (const item of batch) {
+          const { error } = await supabase
+            .from('catalogo_gyp')
+            .update(item.changes)
+            .eq('id', item.id);
+
+          if (error) {
+            errors++;
+            console.error(`Error actualizando ${item.id}:`, error.message);
+          } else {
+            updated++;
+          }
+        }
+      }
+
+      const msgs: string[] = [];
+      if (updated > 0) msgs.push(`${updated} actualizados`);
+      if (noChanges > 0) msgs.push(`${noChanges} sin cambios`);
+      if (skipped > 0) msgs.push(`${skipped} omitidos`);
+      if (errors > 0) msgs.push(`${errors} errores`);
+
+      addToast(errors > 0 ? 'warning' : 'success', msgs.join(', '));
+      fetchData();
+    } catch (err) {
+      addToast('error', 'Error al actualizar: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+      e.target.value = '';
+    }
+  };
+
   // --- DESCARGAR PLANTILLA ---
   const handleDownloadTemplate = async () => {
     try {
@@ -624,6 +853,24 @@ export default function CatalogoPage() {
         <div className="flex gap-2">
           {canWrite && (
             <>
+              <button
+                onClick={handleExportCatalogo}
+                className="inline-flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-5 py-3 text-sm font-semibold text-sky-700 hover:bg-sky-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
+              >
+                <i className="ri-file-excel-2-line w-5 h-5 flex items-center justify-center"></i>
+                Exportar Catálogo
+              </button>
+              <label className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-5 py-3 text-sm font-semibold text-violet-700 hover:bg-violet-100 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
+                <i className="ri-refresh-line w-5 h-5 flex items-center justify-center"></i>
+                Actualizar Masivo
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={handleMassUpdate}
+                  disabled={!!importProgress}
+                />
+              </label>
               <button
                 onClick={handleDownloadTemplate}
                 className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
