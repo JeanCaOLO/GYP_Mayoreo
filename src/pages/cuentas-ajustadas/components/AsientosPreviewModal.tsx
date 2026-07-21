@@ -6,7 +6,8 @@ interface AsientoPreviewRow {
   cuenta_contable: string;
   descripcion_ajuste: string;
   tipo_saldo: string;
-  ajuste: number;
+  ajuste_dolar: number;
+  ajuste_local: number;
   fecha: string | null;
   vista: string;
   categoria_padre: string;
@@ -167,7 +168,7 @@ export default function AsientosPreviewModal({
                       </span>
                     </td>
                     <td className="py-2 px-3 text-slate-900 font-medium text-right whitespace-nowrap text-xs">
-                      {row.ajuste.toLocaleString('es-CR', { minimumFractionDigits: 2 })}
+                      {row.ajuste_dolar.toLocaleString('es-CR', { minimumFractionDigits: 2 })}
                     </td>
                     <td className="py-2 px-3 text-slate-600 text-xs whitespace-nowrap">{row.fecha || '-'}</td>
                     <td className="py-2 px-3 whitespace-nowrap">

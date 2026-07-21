@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+﻿import { useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { CuentaAjustada, CatalogoItem, CuentaAjustadaMontoMensual } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
+import { ProgressModal } from '@/components/base/ProgressModal';
 import { evaluarFormula } from '@/lib/formulaEngine';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import { useFactores } from '@/hooks/useFactores';
@@ -22,7 +23,7 @@ const MESES_LABELS = [
 ];
 
 function formatNumero(n: number | null) {
-  if (n === null || n === undefined) return '—';
+  if (n === null || n === undefined) return '"”';
   return new Intl.NumberFormat('es-CR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n);
 }
 
@@ -61,7 +62,7 @@ export default function CuentasAjustadasPage() {
   const [importProgressState, setImportProgressState] = useState<{ etapa: string; current: number; total: number }>({ etapa: '', current: 0, total: 0 });
   const { isAdmin } = useAuth();
   const { addToast } = useToast();
-  const { factoresMap } = useFactores();
+  const { factoresMap, factores: allFactores } = useFactores();
   const { organizaciones, paises, companias, centrosCostos, organizacionesMap, paisesMap, companiasMap, centrosCostosMap } = useUbicaciones();
   const { isSuperAdmin, userScope, canEdit, canDelete } = usePermissions();
   const canWrite = canEdit;
@@ -157,10 +158,54 @@ export default function CuentasAjustadasPage() {
     return map;
   }, [catalogoGyp]);
 
+  // Helper: busca la tasa mensual más cercana a una fecha, SOLO para la compañía del asiento
+  const getTasaParaFechaYCompania = useCallback((fecha: string | null, companiaId: string | null): { valor: number; fecha: string; tipo: string } | null => {
+    if (!fecha || !companiaId || allFactores.length === 0) return null;
+
+    // Buscar tasas tipo "Tasa Mensual" SOLO para la compañía específica
+    const tasas = allFactores.filter((f) =>
+      f.tipo.toLowerCase().includes('mensual') &&
+      f.compania_id === companiaId
+    );
+
+    // Si no hay tasas para esa compañía, NO hacer fallback — devolver null
+    if (tasas.length === 0) return null;
+
+    // Buscar la tasa con fecha <= fecha del ajuste (la más reciente aplicable)
+    const aplicable = tasas.find((f) => f.fecha <= fecha);
+    if (aplicable) return { valor: aplicable.valor, fecha: aplicable.fecha, tipo: aplicable.tipo };
+
+    // No hay tasa para ese periodo de esa compañía
+    return null;
+  }, [allFactores]);
+
+  // Calcula ajuste_dolar y devuelve info del cálculo para tooltip
+  const getAjusteDolarInfo = useCallback((item: CuentaAjustada): { valor: number; calculado: boolean; tasa: number | null; tasaFecha: string | null; tasaTipo: string | null; local: number | null } => {
+    // Si ya tiene ajuste_dolar, usarlo directamente
+    if (item.ajuste_dolar && item.ajuste_dolar !== 0) {
+      return { valor: item.ajuste_dolar, calculado: false, tasa: null, tasaFecha: null, tasaTipo: null, local: null };
+    }
+    // Si tiene ajuste_local, calcular usando tasa del periodo de la compañía
+    if (item.ajuste_local && item.ajuste_local !== 0) {
+      const tasaInfo = getTasaParaFechaYCompania(item.fecha, item.compania_id);
+      if (tasaInfo && tasaInfo.valor > 0) {
+        return {
+          valor: item.ajuste_local / tasaInfo.valor,
+          calculado: true,
+          tasa: tasaInfo.valor,
+          tasaFecha: tasaInfo.fecha,
+          tasaTipo: tasaInfo.tipo,
+          local: item.ajuste_local,
+        };
+      }
+    }
+    return { valor: 0, calculado: false, tasa: null, tasaFecha: null, tasaTipo: null, local: null };
+  }, [getTasaParaFechaYCompania]);
+
   const cuentasRepetidas = useMemo(() => {
     const count = new Map<string, number>();
     cuentas.forEach((c) => {
-      // GYP Gerencial permite duplicados — no se cuentan como repetidas
+      // GYP Gerencial permite duplicados "” no se cuentan como repetidas
       if (c.vista === 'GYP Gerencial') return;
       const key = `${c.cuenta_contable}|${c.vista || 'null'}`;
       count.set(key, (count.get(key) || 0) + 1);
@@ -233,9 +278,221 @@ export default function CuentasAjustadasPage() {
     return { total, activas, inactivas, existentes, noExistentes, repetidas, acreedor, deudor, gypGerencial, gypProyectada };
   }, [cuentas, catalogoMap, cuentasRepetidas]);
 
+  // --- EXPORTAR ASIENTOS COMPLETO ---
+  const handleExportAsientos = async () => {
+    try {
+      setImportProgress('Exportando...');
+      const xlsx = await import('xlsx');
+
+      const [cuentasRes, orgRes, paisRes, compRes, ccRes] = await Promise.all([
+        supabase.from('cuentas_ajustadas').select('*').order('cuenta_contable', { ascending: true }),
+        supabase.from('organizaciones').select('id,nombre'),
+        supabase.from('paises').select('id,nombre'),
+        supabase.from('companias').select('id,nombre'),
+        supabase.from('centros_costos').select('id,nombre'),
+      ]);
+
+      if (cuentasRes.error) throw cuentasRes.error;
+      const data = cuentasRes.data || [];
+      if (data.length === 0) {
+        addToast('warning', 'No hay registros para exportar.');
+        setImportProgress(null);
+        return;
+      }
+
+      const orgMap = new Map<string, string>();
+      (orgRes.data || []).forEach((o: { id: string; nombre: string }) => orgMap.set(o.id, o.nombre));
+      const paisMap = new Map<string, string>();
+      (paisRes.data || []).forEach((p: { id: string; nombre: string }) => paisMap.set(p.id, p.nombre));
+      const compMap = new Map<string, string>();
+      (compRes.data || []).forEach((c: { id: string; nombre: string }) => compMap.set(c.id, c.nombre));
+      const ccMap = new Map<string, string>();
+      (ccRes.data || []).forEach((c: { id: string; nombre: string }) => ccMap.set(c.id, c.nombre));
+
+      const headers = [
+        'ID', 'ASIENTO', 'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE_DOLAR', 'AJUSTE_LOCAL',
+        'FECHA', 'VISTA', 'CATEGORIA', 'ES_CUENTA_PADRE', 'ACTIVA',
+        'ORGANIZACION', 'PAIS', 'COMPANIA', 'CENTRO_COSTO',
+      ];
+
+      const rows = data.map((item: Record<string, unknown>) => [
+        item.id,
+        item.asiento_id ?? '',
+        item.cuenta_contable ?? '',
+        item.descripcion_ajuste ?? '',
+        item.tipo_saldo ?? '',
+        item.ajuste_dolar ?? 0,
+        item.ajuste_local ?? 0,
+        item.fecha ?? '',
+        item.vista ?? '',
+        item.categoria_padre ?? '',
+        item.es_cuenta_padre ? 'SI' : 'NO',
+        item.activa ? 'SI' : 'NO',
+        item.organizacion_id ? orgMap.get(item.organizacion_id as string) || '' : '',
+        item.pais_id ? paisMap.get(item.pais_id as string) || '' : '',
+        item.compania_id ? compMap.get(item.compania_id as string) || '' : '',
+        item.centro_costo_id ? ccMap.get(item.centro_costo_id as string) || '' : '',
+      ]);
+
+      const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = headers.map(() => ({ wch: 20 }));
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Asientos');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Asientos_Extracontables_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      addToast('success', `${data.length} registros exportados`);
+    } catch (err) {
+      addToast('error', 'Error al exportar: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+    }
+  };
+
+  // --- ACTUALIZACIÍ“N MASIVA (sobreescribe todo) ---
+  const handleMassUpdate = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportProgress('Leyendo archivo...');
+    try {
+      const xlsx = await import('xlsx');
+      const arrayBuf = await file.arrayBuffer();
+      const workbook = xlsx.read(arrayBuf, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+
+      if (json.length === 0) { addToast('warning', 'El archivo está vacío.'); setImportProgress(null); return; }
+
+      const normalizeHeader = (h: string) =>
+        String(h).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_\/]+/g, '').trim();
+      const rawHeaders = Object.keys(json[0]);
+      const headerMap: Record<string, string> = {};
+      rawHeaders.forEach((h) => { headerMap[normalizeHeader(h)] = h; });
+      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
+        for (const v of variants) { const norm = normalizeHeader(v); const key = headerMap[norm]; if (key && key in row && row[key] !== '' && row[key] !== null && row[key] !== undefined) return row[key]; }
+        return undefined;
+      };
+
+      // Verificar columna CUENTA_CONTABLE
+      if (getVal(json[0], 'CUENTA_CONTABLE', 'Cuenta Contable', 'cuenta_contable') === undefined) {
+        addToast('error', 'Falta columna CUENTA_CONTABLE. Usá "Exportar" para obtener el formato correcto.');
+        setImportProgress(null); return;
+      }
+
+      // Cargar ubicaciones
+      const [orgRes2, paisRes2, compRes2, ccRes2] = await Promise.all([
+        supabase.from('organizaciones').select('id,nombre,codigo'),
+        supabase.from('paises').select('id,nombre,codigo'),
+        supabase.from('companias').select('id,nombre,codigo'),
+        supabase.from('centros_costos').select('id,nombre,codigo'),
+      ]);
+      const resolveEntity = (name: string, entities: { id: string; nombre: string; codigo: string }[]): string | null => {
+        if (!name || !name.trim()) return null;
+        const norm = name.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const found = entities.find((e) => e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm || e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm);
+        if (found) return found.id;
+        const partial = entities.find((e) => e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) || norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '')));
+        return partial?.id || null;
+      };
+      const orgsArr = (orgRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const paisesArr = (paisRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const compArr = (compRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const ccArr = (ccRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+
+      // Clasificar filas: existentes (con ID) vs nuevas
+      const excelIds = new Set<string>();
+      const toUpdate: { id: string; data: Record<string, unknown> }[] = [];
+      const toInsertRows: Record<string, unknown>[] = [];
+
+      for (const row of json) {
+        const id = String(getVal(row, 'ID', 'id') ?? '').trim();
+        const cuentaContable = String(getVal(row, 'CUENTA_CONTABLE', 'Cuenta Contable', 'cuenta_contable') ?? '').trim();
+        if (!cuentaContable) continue;
+
+        const rowData: Record<string, unknown> = {
+          asiento_id: String(getVal(row, 'ASIENTO', 'Asiento', 'asiento') ?? '').trim() || null,
+          cuenta_contable: cuentaContable,
+          descripcion_ajuste: String(getVal(row, 'DESCRIPCION', 'Descripcion', 'descripcion_ajuste') ?? '').trim(),
+          tipo_saldo: String(getVal(row, 'TIPO_SALDO', 'Tipo Saldo', 'tipo_saldo') ?? 'acreedor').toLowerCase().includes('deudor') ? 'deudor' : 'acreedor',
+          ajuste_dolar: Number(getVal(row, 'AJUSTE_DOLAR', 'Ajuste Dolar', 'ajuste_dolar', 'Ajuste') ?? 0) || 0,
+          ajuste_local: Number(getVal(row, 'AJUSTE_LOCAL', 'Ajuste Local', 'ajuste_local') ?? 0) || 0,
+          fecha: String(getVal(row, 'FECHA', 'Fecha', 'fecha') ?? '').trim().substring(0, 10) || null,
+          vista: String(getVal(row, 'VISTA', 'Vista', 'vista') ?? '').trim() || null,
+          categoria_padre: String(getVal(row, 'CATEGORIA', 'Categoria', 'categoria_padre') ?? '').trim() || null,
+          es_cuenta_padre: (() => { const v = String(getVal(row, 'ES_CUENTA_PADRE', 'es_cuenta_padre') ?? '').toLowerCase(); return v === 'si' || v === 'true' || v === '1'; })(),
+          activa: (() => { const v = String(getVal(row, 'ACTIVA', 'activa') ?? 'si').toLowerCase(); return v !== 'no' && v !== 'false' && v !== '0'; })(),
+          organizacion_id: resolveEntity(String(getVal(row, 'ORGANIZACION', 'Organizacion') ?? '').trim(), orgsArr),
+          pais_id: resolveEntity(String(getVal(row, 'PAIS', 'Pais', 'País') ?? '').trim(), paisesArr),
+          compania_id: resolveEntity(String(getVal(row, 'COMPANIA', 'Compania', 'Compañia') ?? '').trim(), compArr),
+          centro_costo_id: resolveEntity(String(getVal(row, 'CENTRO_COSTO', 'Centro Costo', 'Centro_Costo') ?? '').trim(), ccArr),
+        };
+
+        if (id) {
+          excelIds.add(id);
+          toUpdate.push({ id, data: rowData });
+        } else {
+          toInsertRows.push(rowData);
+        }
+      }
+
+      setImportProgress('Aplicando cambios...');
+      let inserted = 0, deleted = 0, errors = 0;
+
+      // Estrategia: borrar todos los existentes y re-insertar todo desde el Excel
+      // Esto es mucho más rápido que actualizar 35k registros uno por uno
+      setImportProgress('Eliminando registros anteriores...');
+      
+      // Borrar en batches de 500 usando IDs
+      const { data: allCurrent } = await supabase.from('cuentas_ajustadas').select('id');
+      const currentIds = (allCurrent || []).map((r: { id: string }) => r.id);
+      
+      for (let i = 0; i < currentIds.length; i += 500) {
+        const batch = currentIds.slice(i, i + 500);
+        setImportProgress(`Eliminando ${Math.min(i + 500, currentIds.length)} de ${currentIds.length}...`);
+        const { error } = await supabase.from('cuentas_ajustadas').delete().in('id', batch);
+        if (error) { errors++; console.error('Delete error:', error); }
+        else deleted += batch.length;
+      }
+
+      // Insertar todos los registros del Excel (existentes + nuevos) en batches
+      const allRows = [
+        ...toUpdate.map((item) => item.data),
+        ...toInsertRows,
+      ];
+
+      setImportProgress(`Insertando ${allRows.length} registros...`);
+      for (let i = 0; i < allRows.length; i += 500) {
+        const batch = allRows.slice(i, i + 500);
+        setImportProgress(`Insertando ${Math.min(i + 500, allRows.length)} de ${allRows.length}...`);
+        const { error } = await supabase.from('cuentas_ajustadas').insert(batch);
+        if (error) { errors += batch.length; console.error('Insert error:', error); }
+        else inserted += batch.length;
+      }
+
+      const msgs: string[] = [];
+      if (inserted > 0) msgs.push(`${inserted} insertados`);
+      if (deleted > 0) msgs.push(`${deleted} eliminados previamente`);
+      if (errors > 0) msgs.push(`${errors} errores`);
+      addToast(errors > 0 ? 'warning' : 'success', msgs.join(', ') || 'Sin cambios');
+      fetchData();
+    } catch (err) {
+      addToast('error', 'Error: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+      e.target.value = '';
+    }
+  };
+
   const handleDownloadTemplate = () => {
     const headers = [
-      'ASIENTO', 'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE', 'FECHA',
+      'ASIENTO', 'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE_DOLAR', 'AJUSTE_LOCAL', 'FECHA',
       'VISTA', 'CATEGORIA', 'ORGANIZACION', 'PAIS', 'COMPANIA', 'CENTRO_COSTO',
     ];
 
@@ -323,8 +580,11 @@ export default function CuentasAjustadasPage() {
         const tipoSaldo = String(
           getVal(row, 'Tipo Saldo', 'tipo_saldo', 'Tipo', 'TIPO', 'Saldo', 'SALDO', 'Nature') || ''
         ).trim().toLowerCase();
-        const ajusteVal = Number(
-          getVal(row, 'Ajuste', 'ajuste', 'AJUSTE', 'Monto', 'MONTO', 'Amount', 'AMOUNT') || 0
+        const ajusteDolarVal = Number(
+          getVal(row, 'AJUSTE_DOLAR', 'Ajuste Dolar', 'ajuste_dolar', 'Ajuste', 'Monto', 'MONTO', 'Amount', 'AMOUNT') || 0
+        );
+        const ajusteLocalVal = Number(
+          getVal(row, 'AJUSTE_LOCAL', 'Ajuste Local', 'ajuste_local') || 0
         );
         const fechaRaw = getVal(row, 'Fecha', 'fecha', 'FECHA', 'Date', 'DATE');
         // Convierte serial de Excel (ej. 45658) a YYYY-MM-DD, o parsea string de fecha
@@ -350,8 +610,8 @@ export default function CuentasAjustadasPage() {
           getVal(row, 'Asiento', 'asiento', 'ASIENTO', 'Asiento ID', 'asiento_id', 'ASIENTO_ID', 'Número Asiento', 'Numero Asiento', 'Nro Asiento') || ''
         ).trim();
         const orgNombre = String(getVal(row, 'ORGANIZACION', 'Organizacion', 'organizacion', 'Org', 'ORG') || '').trim();
-        const paisNombre = String(getVal(row, 'PAIS', 'Pais', 'pais', 'País', 'PAÍS') || '').trim();
-        const ciaNombre = String(getVal(row, 'COMPANIA', 'Compania', 'compania', 'Cia', 'CIA', 'Compañía', 'COMPAÑÍA') || '').trim();
+        const paisNombre = String(getVal(row, 'PAIS', 'Pais', 'pais', 'País', 'PAÍS') || '').trim();
+        const ciaNombre = String(getVal(row, 'COMPANIA', 'Compania', 'compania', 'Cia', 'CIA', 'Compañía', 'COMPAÍ‘ÍA') || '').trim();
         const ccNombre = String(getVal(row, 'CENTRO_COSTO', 'Centro_Costo', 'centro_costo', 'Centro Costo', 'CC', 'Cc') || '').trim();
 
         const organizacion_id = null;
@@ -359,7 +619,7 @@ export default function CuentasAjustadasPage() {
         const compania_id = null;
         const centro_costo_id = null;
 
-        // Validation — solo cuenta/descripción requeridas
+        // Validation "” solo cuenta/descripción requeridas
         const errores: string[] = [];
         if (!cuenta_contable || !descripcion) {
           skipped++;
@@ -373,7 +633,8 @@ export default function CuentasAjustadasPage() {
           cuenta_contable: cuenta_contable || '',
           descripcion_ajuste: descripcion || '',
           tipo_saldo: tipoSaldo.includes('deudor') ? 'deudor' : 'acreedor',
-          ajuste: ajusteVal || 0,
+          ajuste_dolar: ajusteDolarVal || 0,
+          ajuste_local: ajusteLocalVal || 0,
           fecha: fechaVal,
           vista: vistaVal || '',
           categoria_padre: categoriaPadre || '',
@@ -394,7 +655,8 @@ export default function CuentasAjustadasPage() {
             cuenta_contable,
             descripcion_ajuste: descripcion,
             tipo_saldo: tipoSaldo.includes('deudor') ? 'deudor' : 'acreedor',
-            ajuste: ajusteVal || 0,
+            ajuste_dolar: ajusteDolarVal || 0,
+            ajuste_local: ajusteLocalVal || 0,
             fecha: fechaVal,
             vista: vistaVal || null,
             categoria_padre: categoriaPadre || null,
@@ -509,16 +771,22 @@ export default function CuentasAjustadasPage() {
       if (editing) {
         // Build change summary for history
         const cambiosArr: string[] = [];
-        const fields: (keyof CuentaAjustada)[] = ['cuenta_contable', 'descripcion_ajuste', 'tipo_saldo', 'ajuste', 'fecha', 'vista', 'categoria_padre', 'es_cuenta_padre', 'activa', 'pais_id', 'centro_costo_id', 'asiento_id'];
+        const fields: (keyof CuentaAjustada)[] = ['cuenta_contable', 'descripcion_ajuste', 'tipo_saldo', 'ajuste_dolar', 'ajuste_local', 'fecha', 'vista', 'categoria_padre', 'es_cuenta_padre', 'activa', 'pais_id', 'centro_costo_id', 'asiento_id'];
         for (const f of fields) {
           const oldVal = editing[f];
           const newVal = formData[f];
           if (String(oldVal ?? '') !== String(newVal ?? '')) {
-            cambiosArr.push(`${f}: "${oldVal ?? ''}" → "${newVal ?? ''}"`);
+            cambiosArr.push(`${f}: "${oldVal ?? ''}" â†’ "${newVal ?? ''}"`);
           }
         }
 
-        const { error } = await supabase.from('cuentas_ajustadas').update(formData).eq('id', editing.id);
+        // Limpiar strings vacios a null para campos UUID
+        const cleanData = { ...formData };
+        for (const key of ['pais_id', 'compania_id', 'organizacion_id', 'centro_costo_id', 'asiento_id']) {
+          if (cleanData[key] === '' || cleanData[key] === undefined) { cleanData[key] = null; }
+        }
+
+        const { error } = await supabase.from('cuentas_ajustadas').update(cleanData).eq('id', editing.id);
         if (error) throw error;
 
         // Log to history
@@ -579,13 +847,13 @@ export default function CuentasAjustadasPage() {
       });
       if (error) throw error;
 
-      // Guardar el total sumado del año actual en la columna ajuste de cuentas_ajustadas
+      // Guardar el total sumado del año actual en la columna ajuste_dolar de cuentas_ajustadas
       const sumaTotal = montos
         .filter((m) => m.anio === ANIO_DEFAULT)
         .reduce((acc, m) => acc + m.monto, 0);
       const { error: updateError } = await supabase
         .from('cuentas_ajustadas')
-        .update({ ajuste: sumaTotal })
+        .update({ ajuste_dolar: sumaTotal })
         .eq('id', cuentaId);
       if (updateError) throw updateError;
 
@@ -702,13 +970,13 @@ export default function CuentasAjustadasPage() {
         if (error) throw error;
       }
 
-      // 5. Update ajuste field for ANIO_DEFAULT accounts whose total changed
+      // 5. Update ajuste_dolar field for ANIO_DEFAULT accounts whose total changed
       const cuentasAfectadas = new Set<string>();
       montosConFormula.forEach((m) => {
         if (m.anio === ANIO_DEFAULT) cuentasAfectadas.add(m.cuenta_ajustada_id);
       });
 
-      const cuentasUpdates: { id: string; ajuste: number }[] = [];
+      const cuentasUpdates: { id: string; ajuste_dolar: number }[] = [];
       for (const cuentaId of cuentasAfectadas) {
         let total = 0;
         montosMensuales.forEach((m) => {
@@ -717,7 +985,7 @@ export default function CuentasAjustadasPage() {
             total += upd ? upd.monto : m.monto;
           }
         });
-        cuentasUpdates.push({ id: cuentaId, ajuste: total });
+        cuentasUpdates.push({ id: cuentaId, ajuste_dolar: total });
       }
 
       for (let i = 0; i < cuentasUpdates.length; i += BATCH) {
@@ -725,7 +993,7 @@ export default function CuentasAjustadasPage() {
         for (const upd of batch) {
           const { error } = await supabase
             .from('cuentas_ajustadas')
-            .update({ ajuste: upd.ajuste })
+            .update({ ajuste_dolar: upd.ajuste_dolar })
             .eq('id', upd.id);
           if (error) throw error;
         }
@@ -765,7 +1033,7 @@ export default function CuentasAjustadasPage() {
   };
 
   const formatFecha = (fecha: string | null) => {
-    if (!fecha) return <span className="text-foreground-400 italic">—</span>;
+    if (!fecha) return <span className="text-foreground-400 italic">"”</span>;
     const d = new Date(fecha + 'T00:00:00');
     return d.toLocaleDateString('es-CR', { day: '2-digit', month: '2-digit', year: 'numeric' });
   };
@@ -1003,6 +1271,18 @@ export default function CuentasAjustadasPage() {
             {canWrite && (
               <>
                 <button
+                  onClick={handleExportAsientos}
+                  className="inline-flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-5 py-3 text-sm font-semibold text-sky-700 hover:bg-sky-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
+                >
+                  <i className="ri-file-excel-2-line w-5 h-5 flex items-center justify-center"></i>
+                  Exportar
+                </button>
+                <label className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-5 py-3 text-sm font-semibold text-violet-700 hover:bg-violet-100 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
+                  <i className="ri-refresh-line w-5 h-5 flex items-center justify-center"></i>
+                  Actualizar Masivo
+                  <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleMassUpdate} disabled={!!importProgress} />
+                </label>
+                <button
                   onClick={handleDownloadTemplate}
                   className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700 active:scale-95 transition-all whitespace-nowrap"
                 >
@@ -1138,23 +1418,23 @@ export default function CuentasAjustadasPage() {
                             <td className="py-2 pr-4 text-foreground-900 min-w-[200px]">{item.descripcion_ajuste}</td>
                             <td className="py-2 pr-4 text-foreground-700 text-xs">{item.categoria_padre}</td>
                             <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700">
-                              {organizacionesMap.get(item.organizacion_id || '') || <span className="text-foreground-400 italic">—</span>}
+                              {organizacionesMap.get(item.organizacion_id || '') || <span className="text-foreground-400 italic">"”</span>}
                             </td>
                             <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700">
-                              {paisesMap.get(item.pais_id || '') || <span className="text-foreground-400 italic">—</span>}
+                              {paisesMap.get(item.pais_id || '') || <span className="text-foreground-400 italic">"”</span>}
                             </td>
                             <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700">
-                              {companiasMap.get(item.compania_id || '') || <span className="text-foreground-400 italic">—</span>}
+                              {companiasMap.get(item.compania_id || '') || <span className="text-foreground-400 italic">"”</span>}
                             </td>
                             <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700">
-                              {centrosCostosMap.get(item.centro_costo_id || '') || <span className="text-foreground-400 italic">—</span>}
+                              {centrosCostosMap.get(item.centro_costo_id || '') || <span className="text-foreground-400 italic">"”</span>}
                             </td>
                             {MESES_LABELS.map((_, idx) => {
                               const mes = idx + 1;
                               const monto = getMontoMes(item.id, mes);
                               return (
                                 <td key={mes} className={`py-2 pr-3 whitespace-nowrap text-right ${monto === 0 ? 'text-foreground-400' : 'text-foreground-950 font-medium'}`}>
-                                  {monto === 0 ? '—' : formatNumero(monto)}
+                                  {monto === 0 ? '"”' : formatNumero(monto)}
                                 </td>
                               );
                             })}
@@ -1200,23 +1480,23 @@ export default function CuentasAjustadasPage() {
                             <td className="py-2 pr-4 font-bold text-foreground-950 min-w-[200px] italic">{cuentaPadre.descripcion_ajuste}</td>
                             <td className="py-2 pr-4 text-foreground-700 text-xs font-bold">{cuentaPadre.categoria_padre}</td>
                             <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700 font-bold">
-                              {organizacionesMap.get(cuentaPadre.organizacion_id || '') || <span className="text-foreground-400 italic">—</span>}
+                              {organizacionesMap.get(cuentaPadre.organizacion_id || '') || <span className="text-foreground-400 italic">"”</span>}
                             </td>
                             <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700 font-bold">
-                              {paisesMap.get(cuentaPadre.pais_id || '') || <span className="text-foreground-400 italic">—</span>}
+                              {paisesMap.get(cuentaPadre.pais_id || '') || <span className="text-foreground-400 italic">"”</span>}
                             </td>
                             <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700 font-bold">
-                              {companiasMap.get(cuentaPadre.compania_id || '') || <span className="text-foreground-400 italic">—</span>}
+                              {companiasMap.get(cuentaPadre.compania_id || '') || <span className="text-foreground-400 italic">"”</span>}
                             </td>
                             <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700 font-bold">
-                              {centrosCostosMap.get(cuentaPadre.centro_costo_id || '') || <span className="text-foreground-400 italic">—</span>}
+                              {centrosCostosMap.get(cuentaPadre.centro_costo_id || '') || <span className="text-foreground-400 italic">"”</span>}
                             </td>
                             {MESES_LABELS.map((_, idx) => {
                               const mes = idx + 1;
                               const monto = getMontoMes(cuentaPadre.id, mes);
                               return (
                                 <td key={mes} className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
-                                  {monto === 0 ? '—' : formatNumero(monto)}
+                                  {monto === 0 ? '"”' : formatNumero(monto)}
                                 </td>
                               );
                             })}
@@ -1268,7 +1548,7 @@ export default function CuentasAjustadasPage() {
                               const total = getTotalCategoriaMes(categoria, mes);
                               return (
                                 <td key={mes} className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-700">
-                                  {total === 0 ? '—' : formatNumero(total)}
+                                  {total === 0 ? '"”' : formatNumero(total)}
                                 </td>
                               );
                             })}
@@ -1290,23 +1570,23 @@ export default function CuentasAjustadasPage() {
                     <td className="py-2 pr-4 text-foreground-900 min-w-[200px]">{item.descripcion_ajuste}</td>
                     <td className="py-2 pr-4 text-foreground-400 text-xs italic">Sin categoría</td>
                     <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700">
-                      {organizacionesMap.get(item.organizacion_id || '') || <span className="text-foreground-400 italic">—</span>}
+                      {organizacionesMap.get(item.organizacion_id || '') || <span className="text-foreground-400 italic">"”</span>}
                     </td>
                     <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700">
-                      {paisesMap.get(item.pais_id || '') || <span className="text-foreground-400 italic">—</span>}
+                      {paisesMap.get(item.pais_id || '') || <span className="text-foreground-400 italic">"”</span>}
                     </td>
                     <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700">
-                      {companiasMap.get(item.compania_id || '') || <span className="text-foreground-400 italic">—</span>}
+                      {companiasMap.get(item.compania_id || '') || <span className="text-foreground-400 italic">"”</span>}
                     </td>
                     <td className="py-2 pr-4 whitespace-nowrap text-[11px] text-foreground-700">
-                      {centrosCostosMap.get(item.centro_costo_id || '') || <span className="text-foreground-400 italic">—</span>}
+                      {centrosCostosMap.get(item.centro_costo_id || '') || <span className="text-foreground-400 italic">"”</span>}
                     </td>
                     {MESES_LABELS.map((_, idx) => {
                       const mes = idx + 1;
                       const monto = getMontoMes(item.id, mes);
                       return (
                         <td key={mes} className={`py-2 pr-3 whitespace-nowrap text-right ${monto === 0 ? 'text-foreground-400' : 'text-foreground-950 font-medium'}`}>
-                          {monto === 0 ? '—' : formatNumero(monto)}
+                          {monto === 0 ? '"”' : formatNumero(monto)}
                         </td>
                       );
                     })}
@@ -1363,7 +1643,8 @@ export default function CuentasAjustadasPage() {
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">En GYP</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Repetida</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Tipo Saldo</th>
-                    <th className="py-3 pr-4 font-medium whitespace-nowrap">Ajuste</th>
+                    <th className="py-3 pr-4 font-medium whitespace-nowrap">Ajuste Dolar</th>
+                    <th className="py-3 pr-4 font-medium whitespace-nowrap">Ajuste Local</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Fecha</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Vista</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Org.</th>
@@ -1395,7 +1676,7 @@ export default function CuentasAjustadasPage() {
                       const isRepetida = (cuentasRepetidas.get(`${item.cuenta_contable}|${item.vista || 'null'}`) || 0) > 1;
                       return (
                         <tr key={item.id} className="border-b border-background-100 hover:bg-background-100/70">
-                          <td className="py-3 pr-4 font-mono text-xs text-foreground-950 whitespace-nowrap font-bold">{item.asiento_id || '—'}</td>
+                          <td className="py-3 pr-4 font-mono text-xs text-foreground-950 whitespace-nowrap font-bold">{item.asiento_id || '"”'}</td>
                           <td className="py-3 pr-4 font-medium text-foreground-950 whitespace-nowrap font-mono text-xs">{item.cuenta_contable}</td>
                           <td className="py-3 pr-4 text-foreground-900 min-w-[200px]">{item.descripcion_ajuste}</td>
                           <td className="py-3 pr-4 text-foreground-700 min-w-[200px]">
@@ -1423,7 +1704,7 @@ export default function CuentasAjustadasPage() {
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-background-100 text-foreground-700">
-                                <i className="ri-check-line"></i> Única
+                                <i className="ri-check-line"></i> Íšnica
                               </span>
                             )}
                           </td>
@@ -1440,7 +1721,25 @@ export default function CuentasAjustadasPage() {
                           <td className="py-3 pr-4 whitespace-nowrap font-medium text-foreground-950">
                             {item.vista === 'GYP Gerencial'
                               ? formatNumero2(getTotalCuenta(item.id))
-                              : formatNumero2(item.ajuste)}
+                              : (() => {
+                                  const info = getAjusteDolarInfo(item);
+                                  return info.calculado ? (
+                                    <span className="relative group cursor-help">
+                                      <span className="border-b border-dashed border-foreground-400">
+                                        {formatNumero2(info.valor)} <i className="ri-calculator-line text-xs text-foreground-400"></i>
+                                      </span>
+                                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-lg bg-slate-900 text-white text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
+                                        {formatNumero2(info.local || 0)} (local) / {formatNumero2(info.tasa || 0)} ({info.tasaTipo || 'tasa'} {info.tasaFecha || ''})
+                                        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-900"></span>
+                                      </span>
+                                    </span>
+                                  ) : (
+                                    formatNumero2(info.valor)
+                                  );
+                                })()}
+                          </td>
+                          <td className="py-3 pr-4 whitespace-nowrap font-medium text-foreground-950">
+                            {formatNumero2(item.ajuste_local)}
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap text-foreground-700">
                             {formatFecha(item.fecha)}
@@ -1455,20 +1754,20 @@ export default function CuentasAjustadasPage() {
                                 {item.vista}
                               </span>
                             ) : (
-                              <span className="text-foreground-400 italic">—</span>
+                              <span className="text-foreground-400 italic">"”</span>
                             )}
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap text-xs text-foreground-700">
-                            {organizacionesMap.get(item.organizacion_id || '') || <span className="text-foreground-400 italic">—</span>}
+                            {organizacionesMap.get(item.organizacion_id || '') || <span className="text-foreground-400 italic">"”</span>}
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap text-xs text-foreground-700">
-                            {paisesMap.get(item.pais_id || '') || <span className="text-foreground-400 italic">—</span>}
+                            {paisesMap.get(item.pais_id || '') || <span className="text-foreground-400 italic">"”</span>}
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap text-xs text-foreground-700">
-                            {companiasMap.get(item.compania_id || '') || <span className="text-foreground-400 italic">—</span>}
+                            {companiasMap.get(item.compania_id || '') || <span className="text-foreground-400 italic">"”</span>}
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap text-xs text-foreground-700">
-                            {centrosCostosMap.get(item.centro_costo_id || '') || <span className="text-foreground-400 italic">—</span>}
+                            {centrosCostosMap.get(item.centro_costo_id || '') || <span className="text-foreground-400 italic">"”</span>}
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap">
                             <button
@@ -1579,7 +1878,7 @@ export default function CuentasAjustadasPage() {
               <h3 className="text-lg font-semibold text-slate-900">Confirmar eliminación</h3>
             </div>
             <p className="text-sm text-slate-600 mb-6">
-              ¿Eliminar la cuenta <strong className="text-slate-900">{confirmDelete.cuenta_contable}</strong> — {confirmDelete.descripcion_ajuste}?
+              ¿Eliminar la cuenta <strong className="text-slate-900">{confirmDelete.cuenta_contable}</strong> "” {confirmDelete.descripcion_ajuste}?
             </p>
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirmDelete(null)} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 transition-colors">Cancelar</button>
@@ -1669,6 +1968,12 @@ export default function CuentasAjustadasPage() {
           centrosCostos={centrosCostos}
         />
       )}
+
+      <ProgressModal
+        isOpen={!!importProgress && !showImportProgressModal && !previewOpen}
+        title="Actualización Masiva"
+        message={importProgress || 'Procesando...'}
+      />
     </div>
   );
 }

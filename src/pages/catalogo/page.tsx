@@ -4,6 +4,7 @@ import type { CatalogoItem, Organizacion, Pais, Compania, CentroCosto } from '@/
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import { ConfirmModal } from '@/components/base/ConfirmModal';
+import { ProgressModal } from '@/components/base/ProgressModal';
 import { CatalogoModal } from '@/pages/catalogo/components/CatalogoModal';
 import ImportPreviewModal from '@/pages/catalogo/components/ImportPreviewModal';
 import type { ImportPreviewRow } from '@/pages/catalogo/components/ImportPreviewModal';
@@ -128,23 +129,38 @@ export default function CatalogoPage() {
       setImportProgress('Exportando...');
       const xlsx = await import('xlsx');
 
-      // Traer todos los registros desde BD
-      const { data, error } = await supabase
-        .from('catalogo_gyp')
-        .select('*')
-        .order('cuenta', { ascending: true });
+      // Traer datos y ubicaciones en paralelo
+      const [catRes, orgRes, paisRes, compRes, ccRes] = await Promise.all([
+        supabase.from('catalogo_gyp').select('*').order('cuenta', { ascending: true }),
+        supabase.from('organizaciones').select('id,nombre'),
+        supabase.from('paises').select('id,nombre'),
+        supabase.from('companias').select('id,nombre'),
+        supabase.from('centros_costos').select('id,nombre'),
+      ]);
 
-      if (error) throw error;
-      if (!data || data.length === 0) {
+      if (catRes.error) throw catRes.error;
+      const data = catRes.data || [];
+      if (data.length === 0) {
         addToast('warning', 'No hay registros en el catálogo para exportar.');
         setImportProgress(null);
         return;
       }
 
+      // Mapas de ID → nombre
+      const orgMap = new Map<string, string>();
+      (orgRes.data || []).forEach((o: { id: string; nombre: string }) => orgMap.set(o.id, o.nombre));
+      const paisMap = new Map<string, string>();
+      (paisRes.data || []).forEach((p: { id: string; nombre: string }) => paisMap.set(p.id, p.nombre));
+      const compMap = new Map<string, string>();
+      (compRes.data || []).forEach((c: { id: string; nombre: string }) => compMap.set(c.id, c.nombre));
+      const ccMap = new Map<string, string>();
+      (ccRes.data || []).forEach((c: { id: string; nombre: string }) => ccMap.set(c.id, c.nombre));
+
       const headers = [
         'ID', 'Linea', 'Grupo', 'Cuenta', 'Descripcion', 'Saldo Normal',
         'Comercializadora', 'Balance_GyP', 'Clasificacion', 'Clasificacion 1',
         'Clasificacion 2', 'Orden Clasificacion', 'Activa',
+        'Organizacion', 'Pais', 'Compania', 'Centro Costo',
       ];
 
       const rows = data.map((item: Record<string, unknown>) => [
@@ -161,10 +177,14 @@ export default function CatalogoPage() {
         item.clasificacion_2 ?? '',
         item.orden_clasificacion ?? '',
         item.activa ? 'SI' : 'NO',
+        item.organizacion_id ? orgMap.get(item.organizacion_id as string) || '' : '',
+        item.pais_id ? paisMap.get(item.pais_id as string) || '' : '',
+        item.compania_id ? compMap.get(item.compania_id as string) || '' : '',
+        item.centro_costo_id ? ccMap.get(item.centro_costo_id as string) || '' : '',
       ]);
 
       const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
-      ws['!cols'] = headers.map(() => ({ wch: 20 }));
+      ws['!cols'] = headers.map(() => ({ wch: 22 }));
       const wb = xlsx.utils.book_new();
       xlsx.utils.book_append_sheet(wb, ws, 'Catalogo GYP');
       const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -230,18 +250,44 @@ export default function CatalogoPage() {
         return;
       }
 
-      // Traer datos actuales de la BD para comparar
+      // Traer datos actuales de la BD para comparar + ubicaciones para resolver nombres
       setImportProgress('Comparando con datos actuales...');
-      const { data: currentData, error: fetchErr } = await supabase
-        .from('catalogo_gyp')
-        .select('*');
+      const [currentRes, orgRes2, paisRes2, compRes2, ccRes2] = await Promise.all([
+        supabase.from('catalogo_gyp').select('*'),
+        supabase.from('organizaciones').select('id,nombre,codigo'),
+        supabase.from('paises').select('id,nombre,codigo'),
+        supabase.from('companias').select('id,nombre,codigo'),
+        supabase.from('centros_costos').select('id,nombre,codigo'),
+      ]);
 
-      if (fetchErr) throw fetchErr;
+      if (currentRes.error) throw currentRes.error;
 
       const currentMap = new Map<string, Record<string, unknown>>();
-      (currentData || []).forEach((item: Record<string, unknown>) => {
+      (currentRes.data || []).forEach((item: Record<string, unknown>) => {
         currentMap.set(item.id as string, item);
       });
+
+      // Función para resolver nombre → ID
+      const resolveEntity = (name: string, entities: { id: string; nombre: string; codigo: string }[]): string | null => {
+        if (!name || !name.trim()) return null;
+        const norm = name.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const found = entities.find((e) =>
+          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+          e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm
+        );
+        if (found) return found.id;
+        // Búsqueda parcial
+        const partial = entities.find((e) =>
+          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
+          norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+        );
+        return partial?.id || null;
+      };
+
+      const orgsArr = (orgRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const paisesArr = (paisRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const compArr = (compRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const ccArr = (ccRes2.data || []) as { id: string; nombre: string; codigo: string }[];
 
       // Campos editables que se comparan
       const editableFields = [
@@ -277,7 +323,7 @@ export default function CatalogoPage() {
 
         for (const field of editableFields) {
           const excelVal = getVal(row, ...field.excel);
-          if (excelVal === undefined) continue; // columna no presente en Excel
+          if (excelVal === undefined) continue;
 
           let newVal: unknown;
           let oldVal = current[field.db];
@@ -292,7 +338,6 @@ export default function CatalogoPage() {
             newVal = String(excelVal).trim() || null;
           }
 
-          // Normalizar para comparar
           const oldNorm = oldVal === null || oldVal === undefined ? null : field.type === 'number' ? Number(oldVal) : field.type === 'boolean' ? Boolean(oldVal) : String(oldVal).trim();
           const newNorm = newVal === null ? null : field.type === 'number' ? Number(newVal) : field.type === 'boolean' ? Boolean(newVal) : String(newVal).trim();
 
@@ -300,6 +345,22 @@ export default function CatalogoPage() {
             changes[field.db] = newVal;
           }
         }
+
+        // Resolver ubicaciones por nombre → ID
+        const orgName = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION') ?? '').trim();
+        const paisName = String(getVal(row, 'Pais', 'pais', 'PAIS', 'País') ?? '').trim();
+        const compName = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Compañia', 'Compañía') ?? '').trim();
+        const ccName = String(getVal(row, 'Centro Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'Centro de Costo') ?? '').trim();
+
+        const newOrgId = resolveEntity(orgName, orgsArr);
+        const newPaisId = resolveEntity(paisName, paisesArr);
+        const newCompId = resolveEntity(compName, compArr);
+        const newCcId = resolveEntity(ccName, ccArr);
+
+        if (String(current.organizacion_id ?? '') !== String(newOrgId ?? '')) changes.organizacion_id = newOrgId;
+        if (String(current.pais_id ?? '') !== String(newPaisId ?? '')) changes.pais_id = newPaisId;
+        if (String(current.compania_id ?? '') !== String(newCompId ?? '')) changes.compania_id = newCompId;
+        if (String(current.centro_costo_id ?? '') !== String(newCcId ?? '')) changes.centro_costo_id = newCcId;
 
         if (Object.keys(changes).length > 0) {
           updates.push({ id, changes });
@@ -1369,6 +1430,12 @@ export default function CatalogoPage() {
         paises={paises}
         companias={companias}
         centrosCostos={centrosCostos}
+      />
+
+      <ProgressModal
+        isOpen={!!importProgress}
+        title="Procesando"
+        message={importProgress || 'Trabajando...'}
       />
     </div>
   );

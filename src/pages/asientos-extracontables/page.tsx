@@ -456,6 +456,301 @@ export default function AsientosExtracontablesPage() {
     }
   };
 
+  // --- EXPORTAR ASIENTOS (todas las líneas) ---
+  const handleExportAsientos = async () => {
+    try {
+      setImportProgress('Exportando asientos...');
+      const xlsx = await import('xlsx');
+
+      const [lineasRes, orgRes, compRes, ccRes] = await Promise.all([
+        supabase.from('asientos_extracontables_lineas').select('*').order('cuenta_contable', { ascending: true }),
+        supabase.from('organizaciones').select('id,nombre'),
+        supabase.from('companias').select('id,nombre'),
+        supabase.from('centros_costos').select('id,nombre'),
+      ]);
+
+      if (lineasRes.error) throw lineasRes.error;
+      const data = lineasRes.data || [];
+      if (data.length === 0) {
+        addToast('warning', 'No hay líneas de asientos para exportar.');
+        setImportProgress(null);
+        return;
+      }
+
+      const orgMap = new Map<string, string>();
+      (orgRes.data || []).forEach((o: { id: string; nombre: string }) => orgMap.set(o.id, o.nombre));
+      const compMap = new Map<string, string>();
+      (compRes.data || []).forEach((c: { id: string; nombre: string }) => compMap.set(c.id, c.nombre));
+      const ccMap = new Map<string, string>();
+      (ccRes.data || []).forEach((c: { id: string; nombre: string }) => ccMap.set(c.id, c.nombre));
+
+      const headers = [
+        'ID', 'Carga_ID', 'Asiento', 'Consecutivo', 'NIT', 'Centro Costo',
+        'Cuenta Contable', 'Fuente', 'Referencia', 'Debito Local', 'Credito Local',
+        'Debito Dolar', 'Credito Dolar', 'Fecha', 'Empresa', 'Paquete',
+        'Organizacion', 'Compania', 'Centro Costo Nombre', 'Activa',
+      ];
+
+      const rows = data.map((item: Record<string, unknown>) => [
+        item.id,
+        item.carga_id ?? '',
+        item.asiento ?? '',
+        item.consecutivo ?? '',
+        item.nit ?? '',
+        item.centro_costo ?? '',
+        item.cuenta_contable ?? '',
+        item.fuente ?? '',
+        item.referencia ?? '',
+        item.debito_local ?? 0,
+        item.credito_local ?? 0,
+        item.debito_dolar ?? 0,
+        item.credito_dolar ?? 0,
+        item.fecha ?? '',
+        item.empresa ?? '',
+        item.paquete ?? '',
+        item.organizacion_id ? orgMap.get(item.organizacion_id as string) || '' : '',
+        item.compania_id ? compMap.get(item.compania_id as string) || '' : '',
+        item.centro_costo_id ? ccMap.get(item.centro_costo_id as string) || '' : '',
+        item.activa ? 'SI' : 'NO',
+      ]);
+
+      const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = headers.map(() => ({ wch: 18 }));
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Asientos');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Asientos_Extracontables_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      addToast('success', `${data.length} líneas exportadas`);
+    } catch (err) {
+      addToast('error', 'Error al exportar: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+    }
+  };
+
+  // --- ACTUALIZACIÓN MASIVA (sobreescribe: actualiza, inserta nuevos, elimina los que no están en el Excel) ---
+  const handleMassUpdateAsientos = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportProgress('Leyendo archivo...');
+    try {
+      const xlsx = await import('xlsx');
+      const data = await file.arrayBuffer();
+      const workbook = xlsx.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+
+      if (json.length === 0) {
+        addToast('warning', 'El archivo está vacío.');
+        setImportProgress(null);
+        return;
+      }
+
+      const normalizeHeader = (h: string) =>
+        String(h).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_\/]+/g, '').trim();
+
+      const rawHeaders = Object.keys(json[0]);
+      const headerMap: Record<string, string> = {};
+      rawHeaders.forEach((h) => { headerMap[normalizeHeader(h)] = h; });
+
+      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
+        for (const v of variants) {
+          const norm = normalizeHeader(v);
+          const originalKey = headerMap[norm];
+          if (originalKey && originalKey in row && row[originalKey] !== '' && row[originalKey] !== null && row[originalKey] !== undefined) {
+            return row[originalKey];
+          }
+        }
+        return undefined;
+      };
+
+      // Verificar que tenga columna Cuenta Contable
+      const cuentaTest = getVal(json[0], 'Cuenta Contable', 'CuentaContable', 'cuenta_contable', 'CUENTA_CONTABLE');
+      if (cuentaTest === undefined) {
+        addToast('error', 'El archivo debe tener la columna "Cuenta Contable".');
+        setImportProgress(null);
+        return;
+      }
+
+      // Cargar ubicaciones para resolver nombres → IDs
+      const [orgRes2, compRes2, ccRes2] = await Promise.all([
+        supabase.from('organizaciones').select('id,nombre,codigo'),
+        supabase.from('companias').select('id,nombre,codigo'),
+        supabase.from('centros_costos').select('id,nombre,codigo'),
+      ]);
+
+      const resolveEntity = (name: string, entities: { id: string; nombre: string; codigo: string }[]): string | null => {
+        if (!name || !name.trim()) return null;
+        const norm = name.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const found = entities.find((e) =>
+          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+          e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm
+        );
+        if (found) return found.id;
+        const partial = entities.find((e) =>
+          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
+          norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+        );
+        return partial?.id || null;
+      };
+
+      const orgsArr2 = (orgRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const compArr2 = (compRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const ccArr2 = (ccRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+
+      // Extraer IDs del Excel (los que tienen ID son existentes, los que no son nuevos)
+      const excelIdsSet = new Set<string>();
+      const rowsToUpdate: { id: string; data: Record<string, unknown> }[] = [];
+      const rowsToInsert: Record<string, unknown>[] = [];
+
+      // Determinar el carga_id — si los registros del Excel tienen Carga_ID, usamos ese
+      let cargaId: string | null = null;
+
+      for (const row of json) {
+        const id = String(getVal(row, 'ID', 'id', 'Id') || '').trim();
+        const cargaIdVal = String(getVal(row, 'Carga_ID', 'carga_id', 'CARGA_ID') || '').trim();
+        if (cargaIdVal && !cargaId) cargaId = cargaIdVal;
+
+        const lineData: Record<string, unknown> = {
+          asiento: String(getVal(row, 'Asiento', 'asiento', 'ASIENTO') ?? '').trim() || null,
+          consecutivo: String(getVal(row, 'Consecutivo', 'consecutivo') ?? '').trim() || null,
+          nit: String(getVal(row, 'NIT', 'nit') ?? '').trim() || null,
+          centro_costo: String(getVal(row, 'Centro Costo', 'CentroCosto', 'centro_costo') ?? '').trim() || null,
+          cuenta_contable: String(getVal(row, 'Cuenta Contable', 'CuentaContable', 'cuenta_contable', 'CUENTA_CONTABLE') ?? '').trim(),
+          fuente: String(getVal(row, 'Fuente', 'fuente') ?? '').trim() || null,
+          referencia: String(getVal(row, 'Referencia', 'referencia') ?? '').trim() || null,
+          debito_local: Number(getVal(row, 'Debito Local', 'debito_local', 'DebitoLocal') ?? 0) || 0,
+          credito_local: Number(getVal(row, 'Credito Local', 'credito_local', 'CreditoLocal') ?? 0) || 0,
+          debito_dolar: Number(getVal(row, 'Debito Dolar', 'debito_dolar', 'DebitoDolar') ?? 0) || 0,
+          credito_dolar: Number(getVal(row, 'Credito Dolar', 'credito_dolar', 'CreditoDolar') ?? 0) || 0,
+          fecha: String(getVal(row, 'Fecha', 'fecha') ?? '').trim().substring(0, 10) || null,
+          empresa: String(getVal(row, 'Empresa', 'empresa') ?? '').trim() || null,
+          paquete: String(getVal(row, 'Paquete', 'paquete') ?? '').trim() || null,
+          organizacion_id: resolveEntity(String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION') ?? '').trim(), orgsArr2),
+          compania_id: resolveEntity(String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Compañia') ?? '').trim(), compArr2),
+          centro_costo_id: resolveEntity(String(getVal(row, 'Centro Costo Nombre', 'CentroCostoNombre', 'centro_costo_nombre') ?? '').trim(), ccArr2),
+          activa: true,
+        };
+
+        if (!lineData.cuenta_contable) continue;
+
+        if (id) {
+          excelIdsSet.add(id);
+          rowsToUpdate.push({ id, data: lineData });
+        } else {
+          rowsToInsert.push(lineData);
+        }
+      }
+
+      // Si tenemos carga_id, eliminamos las líneas que NO están en el Excel
+      setImportProgress('Procesando cambios...');
+      let deleted = 0;
+      let updated = 0;
+      let inserted = 0;
+      let errors = 0;
+
+      if (cargaId) {
+        // Obtener IDs actuales de esa carga
+        const { data: currentLines } = await supabase
+          .from('asientos_extracontables_lineas')
+          .select('id')
+          .eq('carga_id', cargaId);
+
+        const currentIds = (currentLines || []).map((l: { id: string }) => l.id);
+        const toDelete = currentIds.filter((id: string) => !excelIdsSet.has(id));
+
+        // Eliminar los que ya no están en el Excel
+        if (toDelete.length > 0) {
+          setImportProgress(`Eliminando ${toDelete.length} líneas...`);
+          for (let i = 0; i < toDelete.length; i += 200) {
+            const batch = toDelete.slice(i, i + 200);
+            const { error } = await supabase
+              .from('asientos_extracontables_lineas')
+              .delete()
+              .in('id', batch);
+            if (error) { errors++; console.error('Delete error:', error); }
+            else deleted += batch.length;
+          }
+        }
+      }
+
+      // Actualizar registros existentes
+      if (rowsToUpdate.length > 0) {
+        setImportProgress(`Actualizando ${rowsToUpdate.length} líneas...`);
+        for (const item of rowsToUpdate) {
+          const { error } = await supabase
+            .from('asientos_extracontables_lineas')
+            .update(item.data)
+            .eq('id', item.id);
+          if (error) { errors++; } else { updated++; }
+        }
+      }
+
+      // Insertar nuevos registros
+      if (rowsToInsert.length > 0) {
+        setImportProgress(`Insertando ${rowsToInsert.length} líneas nuevas...`);
+        const insertData = rowsToInsert.map((r) => ({ ...r, carga_id: cargaId }));
+        for (let i = 0; i < insertData.length; i += 200) {
+          const batch = insertData.slice(i, i + 200);
+          const { error } = await supabase.from('asientos_extracontables_lineas').insert(batch);
+          if (error) { errors += batch.length; } else { inserted += batch.length; }
+        }
+      }
+
+      // Actualizar totales de la carga
+      if (cargaId) {
+        const { data: updatedLines } = await supabase
+          .from('asientos_extracontables_lineas')
+          .select('debito_local, credito_local, debito_dolar, credito_dolar')
+          .eq('carga_id', cargaId);
+
+        if (updatedLines) {
+          const totals = updatedLines.reduce(
+            (acc: { dl: number; cl: number; dd: number; cd: number }, l: Record<string, unknown>) => ({
+              dl: acc.dl + (Number(l.debito_local) || 0),
+              cl: acc.cl + (Number(l.credito_local) || 0),
+              dd: acc.dd + (Number(l.debito_dolar) || 0),
+              cd: acc.cd + (Number(l.credito_dolar) || 0),
+            }),
+            { dl: 0, cl: 0, dd: 0, cd: 0 },
+          );
+
+          await supabase.from('asientos_extracontables_cargas').update({
+            cantidad_registros: updatedLines.length,
+            total_debito_local: totals.dl,
+            total_credito_local: totals.cl,
+            total_debito_dolar: totals.dd,
+            total_credito_dolar: totals.cd,
+          }).eq('id', cargaId);
+        }
+      }
+
+      const msgs: string[] = [];
+      if (updated > 0) msgs.push(`${updated} actualizados`);
+      if (inserted > 0) msgs.push(`${inserted} insertados`);
+      if (deleted > 0) msgs.push(`${deleted} eliminados`);
+      if (errors > 0) msgs.push(`${errors} errores`);
+      addToast(errors > 0 ? 'warning' : 'success', msgs.join(', ') || 'Sin cambios');
+
+      fetchCargas();
+      setLineas(new Map());
+      setExpandedCarga(null);
+    } catch (err) {
+      addToast('error', 'Error: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+      e.target.value = '';
+    }
+  };
+
   const handleDeleteCarga = async (carga: AsientoCarga) => {
     try {
       await supabase.from('asientos_extracontables_historico').insert({
@@ -487,6 +782,18 @@ export default function AsientosExtracontablesPage() {
         <div className="flex gap-2">
           {canWrite && (
             <>
+              <button
+                onClick={handleExportAsientos}
+                className="inline-flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-5 py-3 text-sm font-semibold text-sky-700 hover:bg-sky-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
+              >
+                <i className="ri-file-excel-2-line w-5 h-5 flex items-center justify-center"></i>
+                Exportar Asientos
+              </button>
+              <label className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-5 py-3 text-sm font-semibold text-violet-700 hover:bg-violet-100 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
+                <i className="ri-refresh-line w-5 h-5 flex items-center justify-center"></i>
+                {importProgress && importProgress.includes('ctualiz') ? importProgress : 'Actualizar Masivo'}
+                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleMassUpdateAsientos} disabled={!!importProgress} />
+              </label>
               <button
                 onClick={handleDownloadTemplate}
                 className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"

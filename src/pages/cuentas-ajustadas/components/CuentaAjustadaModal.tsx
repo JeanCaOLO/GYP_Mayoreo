@@ -39,7 +39,8 @@ export default function CuentaAjustadaModal({
     cuenta_contable: item?.cuenta_contable || '',
     descripcion_ajuste: item?.descripcion_ajuste || '',
     tipo_saldo: item?.tipo_saldo || 'acreedor',
-    ajuste: item?.ajuste ?? 0,
+    ajuste_dolar: item?.ajuste_dolar ?? 0,
+    ajuste_local: item?.ajuste_local ?? 0,
     fecha: item?.fecha || '',
     vista: item?.vista || '',
     categoria_padre: item?.categoria_padre || '',
@@ -138,11 +139,11 @@ export default function CuentaAjustadaModal({
   }, [todasLasCuentas]);
 
   const handleSave = () => {
-    let ajusteVal = form.ajuste;
+    let ajusteDolarVal = form.ajuste_dolar;
     if (modoAjuste === 'formula' && formulaAjuste.trim() && ajustePreview && !ajustePreview.error) {
-      ajusteVal = ajustePreview.monto;
+      ajusteDolarVal = ajustePreview.monto;
     }
-    onSave({ ...form, ajuste: ajusteVal });
+    onSave({ ...form, ajuste_dolar: ajusteDolarVal });
   };
 
   return (
@@ -178,7 +179,7 @@ export default function CuentaAjustadaModal({
             </div>
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-sm font-medium text-slate-700">Ajuste</label>
+                <label className="text-sm font-medium text-slate-700">Ajuste Dolar</label>
                 <button
                   type="button"
                   onClick={() => {
@@ -188,7 +189,7 @@ export default function CuentaAjustadaModal({
                     } else {
                       setModoAjuste('manual');
                       if (ajustePreview && !ajustePreview.error) {
-                        setForm({ ...form, ajuste: ajustePreview.monto });
+                        setForm({ ...form, ajuste_dolar: ajustePreview.monto });
                       }
                       setFormulaAjuste('');
                     }
@@ -254,9 +255,14 @@ export default function CuentaAjustadaModal({
                   )}
                 </div>
               ) : (
-                <input type="number" step="0.01" value={form.ajuste} onChange={(e) => setForm({ ...form, ajuste: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="0.00 (puede ser negativo)" />
+                <input type="number" step="0.01" value={form.ajuste_dolar} onChange={(e) => setForm({ ...form, ajuste_dolar: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="0.00 (puede ser negativo)" />
               )}
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Ajuste Local</label>
+            <input type="number" step="0.01" value={form.ajuste_local} onChange={(e) => setForm({ ...form, ajuste_local: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="0.00 (moneda local)" />
+            <p className="text-xs text-slate-500 mt-1">Si se ingresa Ajuste Local sin Ajuste Dolar, el sistema calculará el dolar automáticamente con la tasa del periodo.</p>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
