@@ -521,6 +521,18 @@ export default function CuentasAjustadasPage() {
     if (!file) return;
     setImportProgress('Leyendo archivo...');
     try {
+      // Cargar ubicaciones frescas desde Supabase
+      const [orgFresh, paisFresh, compFresh, ccFresh] = await Promise.all([
+        supabase.from('organizaciones').select('id,nombre,codigo'),
+        supabase.from('paises').select('id,nombre,codigo'),
+        supabase.from('companias').select('id,nombre,codigo'),
+        supabase.from('centros_costos').select('id,nombre,codigo'),
+      ]);
+      const orgsLocal = (orgFresh.data || []) as { id: string; nombre: string; codigo: string }[];
+      const paisesLocal = (paisFresh.data || []) as { id: string; nombre: string; codigo: string }[];
+      const compLocal = (compFresh.data || []) as { id: string; nombre: string; codigo: string }[];
+      const ccLocal = (ccFresh.data || []) as { id: string; nombre: string; codigo: string }[];
+
       const xlsx = await import('xlsx');
       const data = await file.arrayBuffer();
       const workbook = xlsx.read(data, { type: 'array' });
@@ -614,10 +626,50 @@ export default function CuentasAjustadasPage() {
         const ciaNombre = String(getVal(row, 'COMPANIA', 'Compania', 'compania', 'Cia', 'CIA', 'Compañía', 'COMPAÍ‘ÍA') || '').trim();
         const ccNombre = String(getVal(row, 'CENTRO_COSTO', 'Centro_Costo', 'centro_costo', 'Centro Costo', 'CC', 'Cc') || '').trim();
 
-        const organizacion_id = null;
-        const pais_id = null;
-        const compania_id = null;
-        const centro_costo_id = null;
+        const organizacion_id = (() => {
+          if (!orgNombre) return null;
+          const norm = orgNombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          const found = orgsLocal.find((e) =>
+            e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+            e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+            e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
+            norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+          );
+          return found?.id || null;
+        })();
+        const pais_id = (() => {
+          if (!paisNombre) return null;
+          const norm = paisNombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          const found = paisesLocal.find((e) =>
+            e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+            e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+            e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
+            norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+          );
+          return found?.id || null;
+        })();
+        const compania_id = (() => {
+          if (!ciaNombre) return null;
+          const norm = ciaNombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          const found = compLocal.find((e) =>
+            e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+            e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+            e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
+            norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+          );
+          return found?.id || null;
+        })();
+        const centro_costo_id = (() => {
+          if (!ccNombre) return null;
+          const norm = ccNombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          const found = ccLocal.find((e) =>
+            e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+            e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+            e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
+            norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+          );
+          return found?.id || null;
+        })();
 
         // Validation "” solo cuenta/descripción requeridas
         const errores: string[] = [];
