@@ -1160,6 +1160,9 @@ export default function CatalogoPage() {
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación 1</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación 2</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasif. Comb. 1</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasif. Comb. 2</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasif. Comb. 3</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Orden</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Org.</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">País</th>
@@ -1182,7 +1185,7 @@ export default function CatalogoPage() {
                 ))
               ) : error ? (
                 <tr>
-                  <td colSpan={canWrite ? 17 : 16} className="py-12">
+                  <td colSpan={canWrite ? 20 : 19} className="py-12">
                     <div className="flex flex-col items-center text-center gap-3">
                       <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
                         <i className="ri-error-warning-line text-red-500 text-xl"></i>
@@ -1210,7 +1213,7 @@ export default function CatalogoPage() {
                 </tr>
               ) : searchLoading ? (
                 <tr>
-                  <td colSpan={canWrite ? 17 : 16} className="py-12 text-center">
+                  <td colSpan={canWrite ? 20 : 19} className="py-12 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
                       <p className="text-sm text-slate-500">Buscando en todo el catálogo...</p>
@@ -1219,7 +1222,7 @@ export default function CatalogoPage() {
                 </tr>
               ) : search && search.trim() && searchResults !== null && searchResults.length === 0 ? (
                 <tr>
-                  <td colSpan={canWrite ? 17 : 16} className="py-12 text-center">
+                  <td colSpan={canWrite ? 20 : 19} className="py-12 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center">
                         <i className="ri-search-line text-amber-500 text-xl"></i>
@@ -1248,6 +1251,9 @@ export default function CatalogoPage() {
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_1 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_1 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_3 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.orden_clasificacion ?? '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
                       {organizacionesMap.get(item.organizacion_id || '') || <span className="text-slate-400 italic">—</span>}
@@ -1302,7 +1308,7 @@ export default function CatalogoPage() {
                 ))
               ) : paginated.length === 0 ? (
                 <tr>
-                  <td colSpan={canWrite ? 17 : 16} className="py-8 text-center text-slate-400">
+                  <td colSpan={canWrite ? 20 : 19} className="py-8 text-center text-slate-400">
                     No se encontraron resultados
                   </td>
                 </tr>
@@ -1319,6 +1325,9 @@ export default function CatalogoPage() {
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_1 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_1 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_3 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.orden_clasificacion ?? '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
                       {organizacionesMap.get(item.organizacion_id || '') || <span className="text-slate-400 italic">—</span>}
