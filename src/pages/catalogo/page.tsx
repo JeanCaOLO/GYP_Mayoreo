@@ -159,7 +159,7 @@ export default function CatalogoPage() {
       const headers = [
         'ID', 'Linea', 'Grupo', 'Cuenta', 'Descripcion', 'Saldo Normal',
         'Comercializadora', 'Balance_GyP', 'Clasificacion', 'Clasificacion 1',
-        'Clasificacion 2', 'Orden Clasificacion', 'Activa',
+        'Clasificacion 2', 'Clasificacion Combinado 1', 'Clasificacion Combinado 2', 'Clasificacion Combinado 3', 'Orden Clasificacion', 'Activa',
         'Organizacion', 'Pais', 'Compania', 'Centro Costo',
       ];
 
@@ -175,6 +175,9 @@ export default function CatalogoPage() {
         item.clasificacion ?? '',
         item.clasificacion_1 ?? '',
         item.clasificacion_2 ?? '',
+        item.clasificacion_combinado_1 ?? '',
+        item.clasificacion_combinado_2 ?? '',
+        item.clasificacion_combinado_3 ?? '',
         item.orden_clasificacion ?? '',
         item.activa ? 'SI' : 'NO',
         item.organizacion_id ? orgMap.get(item.organizacion_id as string) || '' : '',
@@ -301,6 +304,9 @@ export default function CatalogoPage() {
         { excel: ['Clasificacion', 'clasificacion', 'CLASIFICACION'], db: 'clasificacion', type: 'string' },
         { excel: ['Clasificacion 1', 'Clasificacion1', 'clasificacion_1'], db: 'clasificacion_1', type: 'string' },
         { excel: ['Clasificacion 2', 'Clasificacion2', 'clasificacion_2'], db: 'clasificacion_2', type: 'string' },
+        { excel: ['Clasificacion Combinado 1', 'clasificacion_combinado_1', 'ClasificacionCombinado1'], db: 'clasificacion_combinado_1', type: 'string' },
+        { excel: ['Clasificacion Combinado 2', 'clasificacion_combinado_2', 'ClasificacionCombinado2'], db: 'clasificacion_combinado_2', type: 'string' },
+        { excel: ['Clasificacion Combinado 3', 'clasificacion_combinado_3', 'ClasificacionCombinado3'], db: 'clasificacion_combinado_3', type: 'string' },
         { excel: ['Orden Clasificacion', 'orden_clasificacion', 'OrdenClasificacion'], db: 'orden_clasificacion', type: 'number' },
         { excel: ['Activa', 'activa', 'ACTIVA'], db: 'activa', type: 'boolean' },
       ];
@@ -427,6 +433,9 @@ export default function CatalogoPage() {
         'Clasificacion',
         'Clasificacion 1',
         'Clasificacion 2',
+        'Clasificacion Combinado 1',
+        'Clasificacion Combinado 2',
+        'Clasificacion Combinado 3',
         'Orden Clasificacion',
         'Organizacion',
         'Pais',
@@ -445,6 +454,9 @@ export default function CatalogoPage() {
         'Gastos Operativos',
         'Gastos Varios',
         'Otros Gastos',
+        '',
+        '',
+        '',
         1,
         'OLO',
         'Colombia',
@@ -622,6 +634,9 @@ export default function CatalogoPage() {
         const clasificacion = String(getVal(row, 'Clasificacion', 'clasificacion', 'CLASIFICACION', 'Clasificación', 'Clase', 'CLASE', 'Categoria', 'CATEGORIA') || '').trim();
         const clasificacion1 = String(getVal(row, 'Clasificacion 1', 'Clasificacion1', 'clasificacion_1', 'CLASIFICACION_1', 'Clasificación 1', 'Sub Clasificacion', 'Subclasificacion') || '').trim();
         const clasificacion2 = String(getVal(row, 'Clasificacion 2', 'Clasificacion2', 'clasificacion_2', 'CLASIFICACION_2', 'Clasificación 2', 'Sub Clasificacion 2', 'Subclasificacion 2') || '').trim();
+        const clasificacionCombinado1 = String(getVal(row, 'Clasificacion Combinado 1', 'clasificacion_combinado_1', 'ClasificacionCombinado1', 'CLASIFICACION_COMBINADO_1') || '').trim();
+        const clasificacionCombinado2 = String(getVal(row, 'Clasificacion Combinado 2', 'clasificacion_combinado_2', 'ClasificacionCombinado2', 'CLASIFICACION_COMBINADO_2') || '').trim();
+        const clasificacionCombinado3 = String(getVal(row, 'Clasificacion Combinado 3', 'clasificacion_combinado_3', 'ClasificacionCombinado3', 'CLASIFICACION_COMBINADO_3') || '').trim();
         const ordenRaw = getVal(row, 'Orden Clasificacion', 'OrdenClasificacion', 'orden_clasificacion', 'Orden', 'ORDEN', 'ORDER', 'Orden_Clasificacion', 'Orden Clasificación');
 
         // Ubicación con matching ROBUSTO
@@ -661,6 +676,9 @@ export default function CatalogoPage() {
           clasificacion,
           clasificacion_1: clasificacion1,
           clasificacion_2: clasificacion2,
+          clasificacion_combinado_1: clasificacionCombinado1 || null,
+          clasificacion_combinado_2: clasificacionCombinado2 || null,
+          clasificacion_combinado_3: clasificacionCombinado3 || null,
           orden_clasificacion: safeNumber(ordenRaw),
           activa: true,
         };
