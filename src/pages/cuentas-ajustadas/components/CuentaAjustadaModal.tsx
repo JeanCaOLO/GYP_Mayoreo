@@ -44,9 +44,6 @@ export default function CuentaAjustadaModal({
     fecha: item?.fecha || '',
     vista: item?.vista || '',
     categoria_padre: item?.categoria_padre || '',
-    clasificacion_combinado_1: item?.clasificacion_combinado_1 || '',
-    clasificacion_combinado_2: item?.clasificacion_combinado_2 || '',
-    clasificacion_combinado_3: item?.clasificacion_combinado_3 || '',
     es_cuenta_padre: item?.es_cuenta_padre ?? false,
     activa: item?.activa ?? true,
     asiento_id: item?.asiento_id || '',
@@ -292,20 +289,6 @@ export default function CuentaAjustadaModal({
                 <input type="checkbox" id="es-padre" checked={form.es_cuenta_padre} onChange={(e) => setForm({ ...form, es_cuenta_padre: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
                 <label htmlFor="es-padre" className="text-sm text-slate-700">Es cuenta padre (fila de total)</label>
               </div>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Clasificación Combinado 1</label>
-              <input type="text" value={form.clasificacion_combinado_1} onChange={(e) => setForm({ ...form, clasificacion_combinado_1: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Clasificación Combinado 2</label>
-              <input type="text" value={form.clasificacion_combinado_2} onChange={(e) => setForm({ ...form, clasificacion_combinado_2: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Clasificación Combinado 3</label>
-              <input type="text" value={form.clasificacion_combinado_3} onChange={(e) => setForm({ ...form, clasificacion_combinado_3: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="" />
             </div>
           </div>
           <div className="flex items-center gap-2">

@@ -313,7 +313,6 @@ export default function CuentasAjustadasPage() {
         'ID', 'ASIENTO', 'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE_DOLAR', 'AJUSTE_LOCAL',
         'FECHA', 'VISTA', 'CATEGORIA', 'ES_CUENTA_PADRE', 'ACTIVA',
         'ORGANIZACION', 'PAIS', 'COMPANIA', 'CENTRO_COSTO',
-        'CLASIFICACION_COMBINADO_1', 'CLASIFICACION_COMBINADO_2', 'CLASIFICACION_COMBINADO_3',
       ];
 
       const rows = data.map((item: Record<string, unknown>) => [
@@ -333,9 +332,6 @@ export default function CuentasAjustadasPage() {
         item.pais_id ? paisMap.get(item.pais_id as string) || '' : '',
         item.compania_id ? compMap.get(item.compania_id as string) || '' : '',
         item.centro_costo_id ? ccMap.get(item.centro_costo_id as string) || '' : '',
-        item.clasificacion_combinado_1 ?? '',
-        item.clasificacion_combinado_2 ?? '',
-        item.clasificacion_combinado_3 ?? '',
       ]);
 
       const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
@@ -430,9 +426,6 @@ export default function CuentasAjustadasPage() {
           fecha: String(getVal(row, 'FECHA', 'Fecha', 'fecha') ?? '').trim().substring(0, 10) || null,
           vista: String(getVal(row, 'VISTA', 'Vista', 'vista') ?? '').trim() || null,
           categoria_padre: String(getVal(row, 'CATEGORIA', 'Categoria', 'categoria_padre') ?? '').trim() || null,
-          clasificacion_combinado_1: String(getVal(row, 'CLASIFICACION_COMBINADO_1', 'Clasificacion Combinado 1', 'clasificacion_combinado_1') ?? '').trim() || null,
-          clasificacion_combinado_2: String(getVal(row, 'CLASIFICACION_COMBINADO_2', 'Clasificacion Combinado 2', 'clasificacion_combinado_2') ?? '').trim() || null,
-          clasificacion_combinado_3: String(getVal(row, 'CLASIFICACION_COMBINADO_3', 'Clasificacion Combinado 3', 'clasificacion_combinado_3') ?? '').trim() || null,
           es_cuenta_padre: (() => { const v = String(getVal(row, 'ES_CUENTA_PADRE', 'es_cuenta_padre') ?? '').toLowerCase(); return v === 'si' || v === 'true' || v === '1'; })(),
           activa: (() => { const v = String(getVal(row, 'ACTIVA', 'activa') ?? 'si').toLowerCase(); return v !== 'no' && v !== 'false' && v !== '0'; })(),
           organizacion_id: resolveEntity(String(getVal(row, 'ORGANIZACION', 'Organizacion') ?? '').trim(), orgsArr),
@@ -501,7 +494,6 @@ export default function CuentasAjustadasPage() {
     const headers = [
       'ASIENTO', 'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE_DOLAR', 'AJUSTE_LOCAL', 'FECHA',
       'VISTA', 'CATEGORIA', 'ORGANIZACION', 'PAIS', 'COMPANIA', 'CENTRO_COSTO',
-      'CLASIFICACION_COMBINADO_1', 'CLASIFICACION_COMBINADO_2', 'CLASIFICACION_COMBINADO_3',
     ];
 
     import('xlsx').then((xlsx) => {
@@ -626,9 +618,6 @@ export default function CuentasAjustadasPage() {
         }
         const vistaVal = String(getVal(row, 'Vista', 'vista', 'VISTA', 'View', 'VIEW') || '').trim();
         const categoriaPadre = String(getVal(row, 'Categoria', 'categoria', 'CATEGORIA', 'Categoria Padre', 'categoria_padre', 'CATEGORIA_PADRE') || '').trim();
-        const clasificacionCombinado1 = String(getVal(row, 'CLASIFICACION_COMBINADO_1', 'Clasificacion Combinado 1', 'clasificacion_combinado_1') || '').trim();
-        const clasificacionCombinado2 = String(getVal(row, 'CLASIFICACION_COMBINADO_2', 'Clasificacion Combinado 2', 'clasificacion_combinado_2') || '').trim();
-        const clasificacionCombinado3 = String(getVal(row, 'CLASIFICACION_COMBINADO_3', 'Clasificacion Combinado 3', 'clasificacion_combinado_3') || '').trim();
         const asientoId = String(
           getVal(row, 'Asiento', 'asiento', 'ASIENTO', 'Asiento ID', 'asiento_id', 'ASIENTO_ID', 'Número Asiento', 'Numero Asiento', 'Nro Asiento') || ''
         ).trim();
@@ -723,9 +712,6 @@ export default function CuentasAjustadasPage() {
             fecha: fechaVal,
             vista: vistaVal || null,
             categoria_padre: categoriaPadre || null,
-            clasificacion_combinado_1: clasificacionCombinado1 || null,
-            clasificacion_combinado_2: clasificacionCombinado2 || null,
-            clasificacion_combinado_3: clasificacionCombinado3 || null,
             asiento_id: asientoId || null,
             organizacion_id: organizacion_id || null,
             pais_id: pais_id || null,

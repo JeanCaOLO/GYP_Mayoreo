@@ -269,7 +269,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       (catData || []).forEach((c) => catalogoMap.set(c.cuenta, c.descripcion));
 
       // Parse rows and deduplicate by (cuenta, anio, mes)
-      const map = new Map<string, { cuenta: string; anio: number; mes: number; monto: number; descripcion_gyp: string; clasificacion_combinado_1: string | null; clasificacion_combinado_2: string | null; clasificacion_combinado_3: string | null }>();
+      const map = new Map<string, { cuenta: string; anio: number; mes: number; monto: number; descripcion_gyp: string }>();
       let skipped = 0;
       let notInCatalogo = 0;
 
@@ -283,9 +283,6 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
         if (!parsed) { skipped++; continue; }
         const descGyp = catalogoMap.get(cuenta) || '';
         if (!descGyp) notInCatalogo++;
-        const clasificacion_combinado_1 = String(row['CLASIFICACION_COMBINADO_1'] || row['clasificacion_combinado_1'] || row['Clasificacion Combinado 1'] || '').trim() || null;
-        const clasificacion_combinado_2 = String(row['CLASIFICACION_COMBINADO_2'] || row['clasificacion_combinado_2'] || row['Clasificacion Combinado 2'] || '').trim() || null;
-        const clasificacion_combinado_3 = String(row['CLASIFICACION_COMBINADO_3'] || row['clasificacion_combinado_3'] || row['Clasificacion Combinado 3'] || '').trim() || null;
         const key = `${cuenta}|${parsed.anio}|${parsed.mes}`;
         map.set(key, {
           cuenta,
@@ -293,9 +290,6 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
           mes: parsed.mes,
           monto: Number.isNaN(monto) ? 0 : monto,
           descripcion_gyp: descGyp,
-          clasificacion_combinado_1,
-          clasificacion_combinado_2,
-          clasificacion_combinado_3,
         });
       }
 
@@ -405,7 +399,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
   };
 
   const handleDownloadTemplate = () => {
-    const headers = ['CUENTA', 'FECHA', 'MONTO', 'CLASIFICACION_COMBINADO_1', 'CLASIFICACION_COMBINADO_2', 'CLASIFICACION_COMBINADO_3'];
+    const headers = ['CUENTA', 'FECHA', 'MONTO'];
 
     import('xlsx').then((xlsx) => {
       const ws = xlsx.utils.aoa_to_sheet([headers]);
@@ -717,6 +711,150 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
   const { isSuperAdmin: lisScope, userScope: luserScope, canEdit: lcanEdit } = usePermissions();
   const canWriteLineas = lcanEdit;
 
+  // --- EXPORTAR LÍNEAS ---
+  const handleExportLineas = async () => {
+    try {
+      const xlsx = await import('xlsx');
+      const { data, error } = await supabase
+        .from('presupuestos_lineas')
+        .select('*')
+        .order('cuenta', { ascending: true });
+      if (error) throw error;
+      if (!data || data.length === 0) { addToast('warning', 'No hay líneas para exportar.'); return; }
+
+      const headers = ['ID', 'Carga_ID', 'Cuenta', 'Anio', 'Mes', 'Monto', 'Monto_Local', 'Monto_USD', 'Descripcion_GYP', 'Activa'];
+      const rows = data.map((item: Record<string, unknown>) => [
+        item.id, item.carga_id ?? '', item.cuenta ?? '', item.anio ?? '', item.mes ?? '',
+        item.monto ?? 0, item.monto_local ?? '', item.monto_usd ?? '',
+        item.descripcion_gyp ?? '', item.activa ? 'SI' : 'NO',
+      ]);
+
+      const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = headers.map(() => ({ wch: 18 }));
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Lineas');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Presupuesto_Lineas_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      addToast('success', `${data.length} líneas exportadas`);
+    } catch (err) {
+      addToast('error', 'Error al exportar: ' + (err as Error).message);
+    }
+  };
+
+  // --- ACTUALIZACIÓN MASIVA DE LÍNEAS ---
+  const handleMassUpdateLineas = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      addToast('info', 'Leyendo archivo...');
+      const xlsx = await import('xlsx');
+      const arrayBuf = await file.arrayBuffer();
+      const workbook = xlsx.read(arrayBuf, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+
+      if (json.length === 0) { addToast('warning', 'El archivo está vacío.'); return; }
+
+      const getVal = (row: Record<string, unknown>, ...keys: string[]) => {
+        for (const k of keys) { if (k in row && row[k] !== '' && row[k] !== null && row[k] !== undefined) return row[k]; }
+        return undefined;
+      };
+
+      // Verificar columna ID
+      const idTest = getVal(json[0], 'ID', 'id', 'Id');
+      if (idTest === undefined) {
+        addToast('error', 'El archivo debe tener la columna "ID". Usá "Exportar Líneas" para obtener el formato correcto.');
+        return;
+      }
+
+      // Traer datos actuales
+      const { data: currentData, error: fetchErr } = await supabase.from('presupuestos_lineas').select('*');
+      if (fetchErr) throw fetchErr;
+      const currentMap = new Map<string, Record<string, unknown>>();
+      (currentData || []).forEach((item: Record<string, unknown>) => { currentMap.set(item.id as string, item); });
+
+      const editableFields = [
+        { keys: ['Cuenta', 'cuenta', 'CUENTA'], db: 'cuenta', type: 'string' },
+        { keys: ['Anio', 'anio', 'ANIO', 'Año'], db: 'anio', type: 'number' },
+        { keys: ['Mes', 'mes', 'MES'], db: 'mes', type: 'number' },
+        { keys: ['Monto', 'monto', 'MONTO'], db: 'monto', type: 'number' },
+        { keys: ['Monto_Local', 'monto_local', 'MONTO_LOCAL'], db: 'monto_local', type: 'number' },
+        { keys: ['Monto_USD', 'monto_usd', 'MONTO_USD'], db: 'monto_usd', type: 'number' },
+        { keys: ['Descripcion_GYP', 'descripcion_gyp', 'DESCRIPCION_GYP'], db: 'descripcion_gyp', type: 'string' },
+        { keys: ['Activa', 'activa', 'ACTIVA'], db: 'activa', type: 'boolean' },
+      ];
+
+      let updated = 0, skipped = 0, noChanges = 0, errors = 0;
+      const updates: { id: string; changes: Record<string, unknown> }[] = [];
+
+      for (const row of json) {
+        const id = String(getVal(row, 'ID', 'id', 'Id') ?? '').trim();
+        if (!id) { skipped++; continue; }
+        const current = currentMap.get(id);
+        if (!current) { skipped++; continue; }
+
+        const changes: Record<string, unknown> = {};
+        for (const field of editableFields) {
+          const excelVal = getVal(row, ...field.keys);
+          if (excelVal === undefined) continue;
+          let newVal: unknown;
+          const oldVal = current[field.db];
+          if (field.type === 'number') {
+            newVal = excelVal === '' ? null : Number(excelVal);
+            if (newVal !== null && isNaN(newVal as number)) newVal = null;
+          } else if (field.type === 'boolean') {
+            const s = String(excelVal).toLowerCase().trim();
+            newVal = s === 'si' || s === 'true' || s === '1' || s === 'yes';
+          } else {
+            newVal = String(excelVal).trim() || null;
+          }
+          const oldNorm = oldVal == null ? null : field.type === 'number' ? Number(oldVal) : field.type === 'boolean' ? Boolean(oldVal) : String(oldVal).trim();
+          const newNorm = newVal == null ? null : field.type === 'number' ? Number(newVal) : field.type === 'boolean' ? Boolean(newVal) : String(newVal).trim();
+          if (String(oldNorm ?? '') !== String(newNorm ?? '')) {
+            changes[field.db] = newVal;
+          }
+        }
+
+        if (Object.keys(changes).length > 0) {
+          updates.push({ id, changes });
+        } else {
+          noChanges++;
+        }
+      }
+
+      if (updates.length === 0) {
+        addToast('info', `Sin cambios. ${noChanges} registros iguales, ${skipped} omitidos.`);
+        return;
+      }
+
+      addToast('info', `Actualizando ${updates.length} registros...`);
+      for (const item of updates) {
+        const { error } = await supabase.from('presupuestos_lineas').update(item.changes).eq('id', item.id);
+        if (error) errors++; else updated++;
+      }
+
+      const msgs: string[] = [];
+      if (updated > 0) msgs.push(`${updated} actualizados`);
+      if (noChanges > 0) msgs.push(`${noChanges} sin cambios`);
+      if (skipped > 0) msgs.push(`${skipped} omitidos`);
+      if (errors > 0) msgs.push(`${errors} errores`);
+      addToast(errors > 0 ? 'warning' : 'success', msgs.join(', '));
+      fetchData();
+    } catch (err) {
+      addToast('error', 'Error: ' + (err as Error).message);
+    } finally {
+      e.target.value = '';
+    }
+  };
+
   // Sync external filter
   useEffect(() => {
     if (cargaFiltroExterno) {
@@ -938,13 +1076,27 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
               </button>
             )}
             {canWriteLineas && (
-              <button
-                onClick={() => { setEditing(null); setModalOpen(true); }}
-                className="inline-flex items-center gap-2 rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-medium text-background-50 hover:bg-primary-600 transition-colors whitespace-nowrap"
-              >
-                <i className="ri-add-line w-5 h-5 flex items-center justify-center"></i>
-                Nueva Línea
-              </button>
+              <>
+                <button
+                  onClick={handleExportLineas}
+                  className="inline-flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm font-semibold text-sky-700 hover:bg-sky-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
+                >
+                  <i className="ri-file-excel-2-line w-5 h-5 flex items-center justify-center"></i>
+                  Exportar Líneas
+                </button>
+                <label className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-100 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
+                  <i className="ri-refresh-line w-5 h-5 flex items-center justify-center"></i>
+                  Actualizar Masivo
+                  <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleMassUpdateLineas} />
+                </label>
+                <button
+                  onClick={() => { setEditing(null); setModalOpen(true); }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-medium text-background-50 hover:bg-primary-600 transition-colors whitespace-nowrap"
+                >
+                  <i className="ri-add-line w-5 h-5 flex items-center justify-center"></i>
+                  Nueva Línea
+                </button>
+              </>
             )}
           </div>
         </div>
