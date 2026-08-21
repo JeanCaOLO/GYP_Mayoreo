@@ -127,6 +127,9 @@ export interface CuentaAjustada {
   fecha: string | null;
   vista: string | null;
   categoria_padre: string | null;
+  clasificacion_combinado_1: string | null;
+  clasificacion_combinado_2: string | null;
+  clasificacion_combinado_3: string | null;
   es_cuenta_padre: boolean;
   activa: boolean;
   created_at: string;
@@ -226,6 +229,9 @@ export interface PresupuestoLinea {
   monto_local: number | null;
   monto_usd: number | null;
   descripcion_gyp: string | null;
+  clasificacion_combinado_1: string | null;
+  clasificacion_combinado_2: string | null;
+  clasificacion_combinado_3: string | null;
   activa: boolean;
   created_at: string;
   pais_id: string | null;

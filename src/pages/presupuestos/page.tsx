@@ -269,7 +269,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       (catData || []).forEach((c) => catalogoMap.set(c.cuenta, c.descripcion));
 
       // Parse rows and deduplicate by (cuenta, anio, mes)
-      const map = new Map<string, { cuenta: string; anio: number; mes: number; monto: number; descripcion_gyp: string }>();
+      const map = new Map<string, { cuenta: string; anio: number; mes: number; monto: number; descripcion_gyp: string; clasificacion_combinado_1: string | null; clasificacion_combinado_2: string | null; clasificacion_combinado_3: string | null }>();
       let skipped = 0;
       let notInCatalogo = 0;
 
@@ -283,6 +283,9 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
         if (!parsed) { skipped++; continue; }
         const descGyp = catalogoMap.get(cuenta) || '';
         if (!descGyp) notInCatalogo++;
+        const clasificacion_combinado_1 = String(row['CLASIFICACION_COMBINADO_1'] || row['clasificacion_combinado_1'] || row['Clasificacion Combinado 1'] || '').trim() || null;
+        const clasificacion_combinado_2 = String(row['CLASIFICACION_COMBINADO_2'] || row['clasificacion_combinado_2'] || row['Clasificacion Combinado 2'] || '').trim() || null;
+        const clasificacion_combinado_3 = String(row['CLASIFICACION_COMBINADO_3'] || row['clasificacion_combinado_3'] || row['Clasificacion Combinado 3'] || '').trim() || null;
         const key = `${cuenta}|${parsed.anio}|${parsed.mes}`;
         map.set(key, {
           cuenta,
@@ -290,6 +293,9 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
           mes: parsed.mes,
           monto: Number.isNaN(monto) ? 0 : monto,
           descripcion_gyp: descGyp,
+          clasificacion_combinado_1,
+          clasificacion_combinado_2,
+          clasificacion_combinado_3,
         });
       }
 
@@ -399,7 +405,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
   };
 
   const handleDownloadTemplate = () => {
-    const headers = ['CUENTA', 'FECHA', 'MONTO'];
+    const headers = ['CUENTA', 'FECHA', 'MONTO', 'CLASIFICACION_COMBINADO_1', 'CLASIFICACION_COMBINADO_2', 'CLASIFICACION_COMBINADO_3'];
 
     import('xlsx').then((xlsx) => {
       const ws = xlsx.utils.aoa_to_sheet([headers]);
