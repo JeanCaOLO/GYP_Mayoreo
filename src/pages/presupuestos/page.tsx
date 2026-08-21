@@ -264,12 +264,35 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       // ── FORMATO ESTÁNDAR → Parseo directo ──
       // Fetch catalogo for cross-reference
       setImportProgress('Consultando catálogo GYP...');
-      const { data: catData } = await supabase.from('catalogo_gyp').select('cuenta, descripcion').eq('activa', true);
+      const [catRes2, orgImport, paisImport, compImport] = await Promise.all([
+        supabase.from('catalogo_gyp').select('cuenta, descripcion').eq('activa', true),
+        supabase.from('organizaciones').select('id,nombre,codigo'),
+        supabase.from('paises').select('id,nombre,codigo'),
+        supabase.from('companias').select('id,nombre,codigo'),
+      ]);
       const catalogoMap = new Map<string, string>();
-      (catData || []).forEach((c) => catalogoMap.set(c.cuenta, c.descripcion));
+      (catRes2.data || []).forEach((c) => catalogoMap.set(c.cuenta, c.descripcion));
+
+      const resolveImportEntity = (name: string, entities: { id: string; nombre: string; codigo: string }[]): string | null => {
+        if (!name) return null;
+        const norm = name.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const found = entities.find((e) =>
+          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+          e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm
+        );
+        if (found) return found.id;
+        const partial = entities.find((e) =>
+          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
+          norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+        );
+        return partial?.id || null;
+      };
+      const importOrgs = (orgImport.data || []) as { id: string; nombre: string; codigo: string }[];
+      const importPaises = (paisImport.data || []) as { id: string; nombre: string; codigo: string }[];
+      const importComps = (compImport.data || []) as { id: string; nombre: string; codigo: string }[];
 
       // Parse rows and deduplicate by (cuenta, anio, mes)
-      const map = new Map<string, { cuenta: string; anio: number; mes: number; monto: number; descripcion_gyp: string }>();
+      const map = new Map<string, { cuenta: string; anio: number; mes: number; monto: number; descripcion_gyp: string; organizacion_id: string | null; pais_id: string | null; compania_id: string | null }>();
       let skipped = 0;
       let notInCatalogo = 0;
 
@@ -283,6 +306,11 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
         if (!parsed) { skipped++; continue; }
         const descGyp = catalogoMap.get(cuenta) || '';
         if (!descGyp) notInCatalogo++;
+
+        const orgName = String(row['ORGANIZACION'] || row['Organizacion'] || row['organizacion'] || '').trim();
+        const paisName = String(row['PAIS'] || row['Pais'] || row['pais'] || '').trim();
+        const compName = String(row['COMPANIA'] || row['Compania'] || row['compania'] || '').trim();
+
         const key = `${cuenta}|${parsed.anio}|${parsed.mes}`;
         map.set(key, {
           cuenta,
@@ -290,6 +318,9 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
           mes: parsed.mes,
           monto: Number.isNaN(monto) ? 0 : monto,
           descripcion_gyp: descGyp,
+          organizacion_id: resolveImportEntity(orgName, importOrgs),
+          pais_id: resolveImportEntity(paisName, importPaises),
+          compania_id: resolveImportEntity(compName, importComps),
         });
       }
 
@@ -300,9 +331,10 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       }
 
       const totalMonto = rows.reduce((s, r) => s + r.monto, 0);
-      const userOrgId = userScope.organizacion_id || null;
-      const userPaisId = userScope.pais_id || null;
-      const userCompId = userScope.compania_id || null;
+      // Usar ubicación de la primera fila si está disponible, fallback al scope del usuario
+      const userOrgId = rows[0]?.organizacion_id || userScope.organizacion_id || null;
+      const userPaisId = rows[0]?.pais_id || userScope.pais_id || null;
+      const userCompId = rows[0]?.compania_id || userScope.compania_id || null;
 
       // Create carga
       setImportProgress(`Creando carga con ${rows.length} registros...`);
@@ -332,11 +364,15 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       let inserted = 0;
       for (let i = 0; i < rows.length; i += BATCH_SIZE) {
         const batch = rows.slice(i, i + BATCH_SIZE).map((r) => ({
-          ...r,
+          cuenta: r.cuenta,
+          anio: r.anio,
+          mes: r.mes,
+          monto: r.monto,
+          descripcion_gyp: r.descripcion_gyp,
           carga_id: cargaId,
-          organizacion_id: userOrgId,
-          pais_id: userPaisId,
-          compania_id: userCompId,
+          organizacion_id: r.organizacion_id || userOrgId,
+          pais_id: r.pais_id || userPaisId,
+          compania_id: r.compania_id || userCompId,
         }));
         setImportProgress(`Guardando ${Math.min(i + batch.length, rows.length)} de ${rows.length}...`);
         const { error } = await supabase.from('presupuestos_lineas').insert(batch);
@@ -399,7 +435,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
   };
 
   const handleDownloadTemplate = () => {
-    const headers = ['CUENTA', 'FECHA', 'MONTO'];
+    const headers = ['CUENTA', 'FECHA', 'MONTO', 'ORGANIZACION', 'PAIS', 'COMPANIA'];
 
     import('xlsx').then((xlsx) => {
       const ws = xlsx.utils.aoa_to_sheet([headers]);
@@ -715,18 +751,32 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
   const handleExportLineas = async () => {
     try {
       const xlsx = await import('xlsx');
-      const { data, error } = await supabase
-        .from('presupuestos_lineas')
-        .select('*')
-        .order('cuenta', { ascending: true });
-      if (error) throw error;
-      if (!data || data.length === 0) { addToast('warning', 'No hay líneas para exportar.'); return; }
+      const [lineasRes, orgRes, paisRes, compRes] = await Promise.all([
+        supabase.from('presupuestos_lineas').select('*').order('cuenta', { ascending: true }),
+        supabase.from('organizaciones').select('id,nombre'),
+        supabase.from('paises').select('id,nombre'),
+        supabase.from('companias').select('id,nombre'),
+      ]);
+      if (lineasRes.error) throw lineasRes.error;
+      const data = lineasRes.data || [];
+      if (data.length === 0) { addToast('warning', 'No hay líneas para exportar.'); return; }
 
-      const headers = ['ID', 'Carga_ID', 'Cuenta', 'Anio', 'Mes', 'Monto', 'Monto_Local', 'Monto_USD', 'Descripcion_GYP', 'Activa'];
+      const orgMap = new Map<string, string>();
+      (orgRes.data || []).forEach((o: { id: string; nombre: string }) => orgMap.set(o.id, o.nombre));
+      const paisMap = new Map<string, string>();
+      (paisRes.data || []).forEach((p: { id: string; nombre: string }) => paisMap.set(p.id, p.nombre));
+      const compMap = new Map<string, string>();
+      (compRes.data || []).forEach((c: { id: string; nombre: string }) => compMap.set(c.id, c.nombre));
+
+      const headers = ['ID', 'Carga_ID', 'Cuenta', 'Anio', 'Mes', 'Monto', 'Monto_Local', 'Monto_USD', 'Descripcion_GYP', 'Organizacion', 'Pais', 'Compania', 'Activa'];
       const rows = data.map((item: Record<string, unknown>) => [
         item.id, item.carga_id ?? '', item.cuenta ?? '', item.anio ?? '', item.mes ?? '',
         item.monto ?? 0, item.monto_local ?? '', item.monto_usd ?? '',
-        item.descripcion_gyp ?? '', item.activa ? 'SI' : 'NO',
+        item.descripcion_gyp ?? '',
+        item.organizacion_id ? orgMap.get(item.organizacion_id as string) || '' : '',
+        item.pais_id ? paisMap.get(item.pais_id as string) || '' : '',
+        item.compania_id ? compMap.get(item.compania_id as string) || '' : '',
+        item.activa ? 'SI' : 'NO',
       ]);
 
       const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
@@ -792,6 +842,30 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
         { keys: ['Activa', 'activa', 'ACTIVA'], db: 'activa', type: 'boolean' },
       ];
 
+      // Cargar ubicaciones para resolver nombres
+      const [orgRes2, paisRes2, compRes2] = await Promise.all([
+        supabase.from('organizaciones').select('id,nombre,codigo'),
+        supabase.from('paises').select('id,nombre,codigo'),
+        supabase.from('companias').select('id,nombre,codigo'),
+      ]);
+      const resolveEntity = (name: string, entities: { id: string; nombre: string; codigo: string }[]): string | null => {
+        if (!name) return null;
+        const norm = name.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const found = entities.find((e) =>
+          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
+          e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm
+        );
+        if (found) return found.id;
+        const partial = entities.find((e) =>
+          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
+          norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+        );
+        return partial?.id || null;
+      };
+      const orgsArr = (orgRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const paisesArr = (paisRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const compArr = (compRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+
       let updated = 0, skipped = 0, noChanges = 0, errors = 0;
       const updates: { id: string; changes: Record<string, unknown> }[] = [];
 
@@ -822,6 +896,19 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
             changes[field.db] = newVal;
           }
         }
+
+        // Resolver ubicaciones por nombre
+        const orgName = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION') ?? '').trim();
+        const paisName = String(getVal(row, 'Pais', 'pais', 'PAIS') ?? '').trim();
+        const compName = String(getVal(row, 'Compania', 'compania', 'COMPANIA') ?? '').trim();
+
+        const newOrgId = resolveEntity(orgName, orgsArr);
+        const newPaisId = resolveEntity(paisName, paisesArr);
+        const newCompId = resolveEntity(compName, compArr);
+
+        if (String(current.organizacion_id ?? '') !== String(newOrgId ?? '')) changes.organizacion_id = newOrgId;
+        if (String(current.pais_id ?? '') !== String(newPaisId ?? '')) changes.pais_id = newPaisId;
+        if (String(current.compania_id ?? '') !== String(newCompId ?? '')) changes.compania_id = newCompId;
 
         if (Object.keys(changes).length > 0) {
           updates.push({ id, changes });
