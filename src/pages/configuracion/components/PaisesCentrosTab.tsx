@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/contexts/ToastContext';
 import { useUbicaciones } from '@/contexts/UbicacionesContext';
 import { Modal } from '@/components/base/Modal';
 import { ConfirmModal } from '@/components/base/ConfirmModal';
+import { ProgressModal } from '@/components/base/ProgressModal';
 import type { Pais, CentroCosto, Organizacion, Compania } from '@/types';
 
 interface PaisForm {
@@ -79,6 +80,8 @@ export default function PaisesCentrosTab() {
   const [savingCentro, setSavingCentro] = useState(false);
   const [deleteCentro, setDeleteCentro] = useState<CentroCosto | null>(null);
   const [deletingCentro, setDeletingCentro] = useState(false);
+  const [importingCentro, setImportingCentro] = useState<string | null>(null);
+  const centroFileRef = useRef<HTMLInputElement>(null);
 
   const getOrgNombre = (id: string) => organizaciones.find((o) => o.id === id)?.nombre || '—';
   const getPaisNombre = (id: string) => paises.find((p) => p.id === id)?.nombre || '—';
@@ -262,6 +265,160 @@ export default function PaisesCentrosTab() {
     setDeleteCentro(null);
   };
 
+  // --- CARGA MASIVA Centros de Costo ---
+  const normalizeText = (text: unknown): string =>
+    String(text ?? '')
+      .toLowerCase()
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ');
+
+  const findByNombreOrCodigo = <T extends { id: string; nombre: string; codigo: string }>(
+    term: string,
+    list: T[],
+  ): T | null => {
+    if (!term || !term.trim()) return null;
+    const norm = normalizeText(term);
+    return (
+      list.find((e) => normalizeText(e.codigo) === norm) ||
+      list.find((e) => normalizeText(e.nombre) === norm) ||
+      null
+    );
+  };
+
+  const handleDownloadCentrosTemplate = async () => {
+    try {
+      const xlsx = await import('xlsx');
+      const headers = ['Codigo', 'Nombre', 'Pais', 'Compania'];
+      const ejemplo1 = ['CC-001', 'Centro de Costo Ejemplo', paises[0]?.nombre || 'Colombia', companias[0]?.nombre || 'BEVAL'];
+      const ejemplo2 = ['CC-002', 'Otro Centro (sin compañía)', paises[0]?.nombre || 'Colombia', ''];
+      const ws = xlsx.utils.aoa_to_sheet([headers, ejemplo1, ejemplo2]);
+      ws['!cols'] = [{ wch: 16 }, { wch: 32 }, { wch: 20 }, { wch: 20 }];
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Centros de Costo');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Plantilla_Centros_Costo.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      addToast('error', 'Error al generar plantilla: ' + (err as Error).message);
+    }
+  };
+
+  const handleImportCentros = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportingCentro('Leyendo archivo...');
+    try {
+      const xlsx = await import('xlsx');
+      const data = await file.arrayBuffer();
+      const workbook = xlsx.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+
+      if (json.length === 0) {
+        addToast('warning', 'El archivo está vacío o no tiene datos.');
+        setImportingCentro(null);
+        e.target.value = '';
+        return;
+      }
+
+      const normalizeHeader = (h: string) =>
+        String(h).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_\/]+/g, '').trim();
+      const headerMap: Record<string, string> = {};
+      Object.keys(json[0]).forEach((h) => { headerMap[normalizeHeader(h)] = h; });
+      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
+        for (const v of variants) {
+          const key = headerMap[normalizeHeader(v)];
+          if (key && key in row && row[key] !== '' && row[key] !== null && row[key] !== undefined) return row[key];
+        }
+        return '';
+      };
+
+      // Detectar duplicados existentes (por pais + compania + codigo)
+      const existingKeys = new Set(
+        centros.map((c) => `${c.pais_id}|${c.compania_id ?? ''}|${normalizeText(c.codigo)}`),
+      );
+
+      const toInsert: { pais_id: string; compania_id: string | null; codigo: string; nombre: string }[] = [];
+      let skipped = 0;
+      let noPais = 0;
+      let duplicates = 0;
+      const seen = new Set<string>();
+
+      for (const row of json) {
+        const codigo = String(getVal(row, 'Codigo', 'Código', 'codigo', 'CODIGO', 'CC') || '').trim();
+        const nombre = String(getVal(row, 'Nombre', 'nombre', 'NOMBRE', 'Descripcion', 'Descripción') || '').trim();
+        const paisTerm = String(getVal(row, 'Pais', 'País', 'pais', 'PAIS') || '').trim();
+        const ciaTerm = String(getVal(row, 'Compania', 'Compañia', 'Compañía', 'compania', 'COMPANIA', 'Cia') || '').trim();
+
+        if (!codigo || !nombre) { skipped++; continue; }
+
+        const pais = findByNombreOrCodigo(paisTerm, paises);
+        if (!pais) { noPais++; continue; }
+
+        const cia = findByNombreOrCodigo(ciaTerm, companias);
+        const compania_id = cia?.id ?? null;
+
+        const key = `${pais.id}|${compania_id ?? ''}|${normalizeText(codigo)}`;
+        if (existingKeys.has(key) || seen.has(key)) { duplicates++; continue; }
+        seen.add(key);
+
+        toInsert.push({ pais_id: pais.id, compania_id, codigo: codigo.toUpperCase(), nombre });
+      }
+
+      if (toInsert.length === 0) {
+        addToast('warning', `Nada para importar. ${skipped} sin código/nombre, ${noPais} con país no encontrado, ${duplicates} duplicados.`);
+        setImportingCentro(null);
+        e.target.value = '';
+        return;
+      }
+
+      setImportingCentro(`Importando ${toInsert.length} centros de costo...`);
+      let imported = 0;
+      let failed = 0;
+      const BATCH_SIZE = 200;
+      const insertedRows: CentroCosto[] = [];
+      for (let i = 0; i < toInsert.length; i += BATCH_SIZE) {
+        const batch = toInsert.slice(i, i + BATCH_SIZE);
+        setImportingCentro(`Importando ${Math.min(i + batch.length, toInsert.length)} de ${toInsert.length}...`);
+        const { data: inserted, error } = await supabase.from('centros_costos').insert(batch).select('*');
+        if (error) {
+          failed += batch.length;
+          console.error('Error importando centros:', error.message);
+        } else {
+          imported += batch.length;
+          if (inserted) insertedRows.push(...(inserted as CentroCosto[]));
+        }
+      }
+
+      if (insertedRows.length > 0) {
+        setCentrosCostos((prev) => [...prev, ...insertedRows]);
+      }
+
+      const parts: string[] = [];
+      if (imported > 0) parts.push(`${imported} importados`);
+      if (skipped > 0) parts.push(`${skipped} sin código/nombre`);
+      if (noPais > 0) parts.push(`${noPais} país no encontrado`);
+      if (duplicates > 0) parts.push(`${duplicates} duplicados`);
+      if (failed > 0) parts.push(`${failed} errores`);
+      addToast(failed > 0 ? 'warning' : 'success', parts.join(', '));
+      refetch();
+    } catch (err) {
+      addToast('error', 'Error al importar: ' + (err as Error).message);
+    } finally {
+      setImportingCentro(null);
+      e.target.value = '';
+    }
+  };
+
   const subTabs: { id: SubTab; label: string; count: number; icon: string }[] = [
     { id: 'organizaciones', label: 'Organizaciones', count: organizaciones.length, icon: 'ri-building-line' },
     { id: 'paises', label: 'Países', count: paises.length, icon: 'ri-global-line' },
@@ -439,7 +596,14 @@ export default function PaisesCentrosTab() {
         <div className="rounded-xl bg-white border border-slate-200">
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
             <div><h3 className="text-sm font-semibold text-slate-900">Centros de Costo</h3><p className="text-xs text-slate-500">{centros.length} registrado{centros.length !== 1 ? 's' : ''}</p></div>
-            <button onClick={openCreateCentro} disabled={paises.length === 0} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"><i className="ri-add-line text-sm"></i> Agregar</button>
+            <div className="flex items-center gap-2">
+              <input ref={centroFileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportCentros} />
+              <button onClick={handleDownloadCentrosTemplate} className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors whitespace-nowrap"><i className="ri-download-line text-sm"></i> Plantilla</button>
+              <button onClick={() => centroFileRef.current?.click()} disabled={paises.length === 0 || importingCentro !== null} className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">
+                {importingCentro !== null ? <i className="ri-loader-4-line animate-spin text-sm"></i> : <i className="ri-upload-line text-sm"></i>} Importar
+              </button>
+              <button onClick={openCreateCentro} disabled={paises.length === 0} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"><i className="ri-add-line text-sm"></i> Agregar</button>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -494,6 +658,9 @@ export default function PaisesCentrosTab() {
           </div>
         </div>
       </div>
+
+      {/* Progreso de importación de centros de costo */}
+      <ProgressModal isOpen={importingCentro !== null} title="Importando Centros de Costo" message={importingCentro || ''} />
 
       {/* --- Modal Organización --- */}
       <Modal isOpen={showOrgModal} onClose={() => setShowOrgModal(false)} title={editingOrg ? 'Editar Organización' : 'Nueva Organización'} size="sm">

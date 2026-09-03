@@ -645,11 +645,22 @@ export default function CatalogoPage() {
         const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Compañia', 'Compañía', 'Cia', 'CIA', 'Company', 'COMPANY') || '').trim();
         const ccNombre = String(getVal(row, 'Centro de Costo', 'Centro Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'CC', 'cc', 'Cost Center', 'COSTCENTER', 'Centro_Costo', 'centrodecosto') || '').trim();
 
-        // Ubicaciones: se omiten completamente del matching y del insert
-        const orgId = null;
-        const paisId = null;
-        const ciaId = null;
-        const ccId = null;
+        // Ubicación con matching ROBUSTO contra los datos frescos de Supabase
+        const orgMatch = findEntity(orgNombre, orgsData);
+        const paisMatch = findEntity(paisNombre, paisesData);
+        const ciaMatch = findEntity(ciaNombre, compData);
+        const ccMatch = findEntity(ccNombre, centrosData);
+
+        const orgId = orgMatch?.id ?? null;
+        const paisId = paisMatch?.id ?? null;
+        const ciaId = ciaMatch?.id ?? null;
+        const ccId = ccMatch?.id ?? null;
+
+        // Contadores de estadísticas
+        if (paisId) paisCount++;
+        else if (paisNombre) missingUbicacion++;
+        if (orgId) orgCount++;
+        if (ccId) ccCount++;
 
         // Sin detección de duplicados — el upsert en BD maneja conflictos
         const rowError: string | null = null;
@@ -681,6 +692,10 @@ export default function CatalogoPage() {
           clasificacion_combinado_3: clasificacionCombinado3 || null,
           orden_clasificacion: safeNumber(ordenRaw),
           activa: true,
+          organizacion_id: orgId,
+          pais_id: paisId,
+          compania_id: ciaId,
+          centro_costo_id: ccId,
         };
 
         if (rowValido) {
