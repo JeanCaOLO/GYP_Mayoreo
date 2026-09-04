@@ -264,11 +264,12 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       // ── FORMATO ESTÁNDAR → Parseo directo ──
       // Fetch catalogo for cross-reference
       setImportProgress('Consultando catálogo GYP...');
-      const [catRes2, orgImport, paisImport, compImport] = await Promise.all([
+      const [catRes2, orgImport, paisImport, compImport, ccImport] = await Promise.all([
         supabase.from('catalogo_gyp').select('cuenta, descripcion').eq('activa', true),
         supabase.from('organizaciones').select('id,nombre,codigo'),
         supabase.from('paises').select('id,nombre,codigo'),
         supabase.from('companias').select('id,nombre,codigo'),
+        supabase.from('centros_costos').select('id,nombre,codigo'),
       ]);
       const catalogoMap = new Map<string, string>();
       (catRes2.data || []).forEach((c) => catalogoMap.set(c.cuenta, c.descripcion));
@@ -290,9 +291,10 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       const importOrgs = (orgImport.data || []) as { id: string; nombre: string; codigo: string }[];
       const importPaises = (paisImport.data || []) as { id: string; nombre: string; codigo: string }[];
       const importComps = (compImport.data || []) as { id: string; nombre: string; codigo: string }[];
+      const importCentros = (ccImport.data || []) as { id: string; nombre: string; codigo: string }[];
 
       // Parse rows and deduplicate by (cuenta, anio, mes)
-      const map = new Map<string, { cuenta: string; anio: number; mes: number; monto: number; descripcion_gyp: string; organizacion_id: string | null; pais_id: string | null; compania_id: string | null }>();
+      const map = new Map<string, { cuenta: string; anio: number; mes: number; monto: number; descripcion_gyp: string; organizacion_id: string | null; pais_id: string | null; compania_id: string | null; centro_costo_id: string | null }>();
       let skipped = 0;
       let notInCatalogo = 0;
 
@@ -310,6 +312,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
         const orgName = String(row['ORGANIZACION'] || row['Organizacion'] || row['organizacion'] || '').trim();
         const paisName = String(row['PAIS'] || row['Pais'] || row['pais'] || '').trim();
         const compName = String(row['COMPANIA'] || row['Compania'] || row['compania'] || '').trim();
+        const ccName = String(row['CENTRO_COSTO'] || row['Centro_Costo'] || row['Centro Costo'] || row['CentroCosto'] || row['centro_costo'] || row['Centro de Costo'] || row['CC'] || '').trim();
 
         const key = `${cuenta}|${parsed.anio}|${parsed.mes}`;
         map.set(key, {
@@ -321,6 +324,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
           organizacion_id: resolveImportEntity(orgName, importOrgs),
           pais_id: resolveImportEntity(paisName, importPaises),
           compania_id: resolveImportEntity(compName, importComps),
+          centro_costo_id: resolveImportEntity(ccName, importCentros),
         });
       }
 
@@ -335,6 +339,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       const userOrgId = rows[0]?.organizacion_id || userScope.organizacion_id || null;
       const userPaisId = rows[0]?.pais_id || userScope.pais_id || null;
       const userCompId = rows[0]?.compania_id || userScope.compania_id || null;
+      const cargaCcId = rows[0]?.centro_costo_id || null;
 
       // Create carga
       setImportProgress(`Creando carga con ${rows.length} registros...`);
@@ -348,7 +353,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
           organizacion_id: userOrgId,
           pais_id: userPaisId,
           compania_id: userCompId,
-          centro_costo_id: null,
+          centro_costo_id: cargaCcId,
         })
         .select('id')
         .single();
@@ -373,6 +378,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
           organizacion_id: r.organizacion_id || userOrgId,
           pais_id: r.pais_id || userPaisId,
           compania_id: r.compania_id || userCompId,
+          centro_costo_id: r.centro_costo_id || cargaCcId,
         }));
         setImportProgress(`Guardando ${Math.min(i + batch.length, rows.length)} de ${rows.length}...`);
         const { error } = await supabase.from('presupuestos_lineas').insert(batch);
@@ -435,7 +441,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
   };
 
   const handleDownloadTemplate = () => {
-    const headers = ['CUENTA', 'FECHA', 'MONTO', 'ORGANIZACION', 'PAIS', 'COMPANIA'];
+    const headers = ['CUENTA', 'FECHA', 'MONTO', 'ORGANIZACION', 'PAIS', 'COMPANIA', 'CENTRO_COSTO'];
 
     import('xlsx').then((xlsx) => {
       const ws = xlsx.utils.aoa_to_sheet([headers]);
