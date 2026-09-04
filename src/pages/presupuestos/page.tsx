@@ -751,11 +751,12 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
   const handleExportLineas = async () => {
     try {
       const xlsx = await import('xlsx');
-      const [lineasRes, orgRes, paisRes, compRes] = await Promise.all([
+      const [lineasRes, orgRes, paisRes, compRes, ccRes] = await Promise.all([
         supabase.from('presupuestos_lineas').select('*').order('cuenta', { ascending: true }),
         supabase.from('organizaciones').select('id,nombre'),
         supabase.from('paises').select('id,nombre'),
         supabase.from('companias').select('id,nombre'),
+        supabase.from('centros_costos').select('id,nombre'),
       ]);
       if (lineasRes.error) throw lineasRes.error;
       const data = lineasRes.data || [];
@@ -767,8 +768,10 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
       (paisRes.data || []).forEach((p: { id: string; nombre: string }) => paisMap.set(p.id, p.nombre));
       const compMap = new Map<string, string>();
       (compRes.data || []).forEach((c: { id: string; nombre: string }) => compMap.set(c.id, c.nombre));
+      const ccMap = new Map<string, string>();
+      (ccRes.data || []).forEach((c: { id: string; nombre: string }) => ccMap.set(c.id, c.nombre));
 
-      const headers = ['ID', 'Carga_ID', 'Cuenta', 'Anio', 'Mes', 'Monto', 'Monto_Local', 'Monto_USD', 'Descripcion_GYP', 'Organizacion', 'Pais', 'Compania', 'Activa'];
+      const headers = ['ID', 'Carga_ID', 'Cuenta', 'Anio', 'Mes', 'Monto', 'Monto_Local', 'Monto_USD', 'Descripcion_GYP', 'Organizacion', 'Pais', 'Compania', 'Centro_Costo', 'Activa'];
       const rows = data.map((item: Record<string, unknown>) => [
         item.id, item.carga_id ?? '', item.cuenta ?? '', item.anio ?? '', item.mes ?? '',
         item.monto ?? 0, item.monto_local ?? '', item.monto_usd ?? '',
@@ -776,6 +779,7 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
         item.organizacion_id ? orgMap.get(item.organizacion_id as string) || '' : '',
         item.pais_id ? paisMap.get(item.pais_id as string) || '' : '',
         item.compania_id ? compMap.get(item.compania_id as string) || '' : '',
+        item.centro_costo_id ? ccMap.get(item.centro_costo_id as string) || '' : '',
         item.activa ? 'SI' : 'NO',
       ]);
 
@@ -843,10 +847,11 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
       ];
 
       // Cargar ubicaciones para resolver nombres
-      const [orgRes2, paisRes2, compRes2] = await Promise.all([
+      const [orgRes2, paisRes2, compRes2, ccRes2] = await Promise.all([
         supabase.from('organizaciones').select('id,nombre,codigo'),
         supabase.from('paises').select('id,nombre,codigo'),
         supabase.from('companias').select('id,nombre,codigo'),
+        supabase.from('centros_costos').select('id,nombre,codigo'),
       ]);
       const resolveEntity = (name: string, entities: { id: string; nombre: string; codigo: string }[]): string | null => {
         if (!name) return null;
@@ -865,6 +870,7 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
       const orgsArr = (orgRes2.data || []) as { id: string; nombre: string; codigo: string }[];
       const paisesArr = (paisRes2.data || []) as { id: string; nombre: string; codigo: string }[];
       const compArr = (compRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      const ccArr = (ccRes2.data || []) as { id: string; nombre: string; codigo: string }[];
 
       let updated = 0, skipped = 0, noChanges = 0, errors = 0;
       const updates: { id: string; changes: Record<string, unknown> }[] = [];
@@ -901,14 +907,17 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
         const orgName = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION') ?? '').trim();
         const paisName = String(getVal(row, 'Pais', 'pais', 'PAIS') ?? '').trim();
         const compName = String(getVal(row, 'Compania', 'compania', 'COMPANIA') ?? '').trim();
+        const ccName = String(getVal(row, 'Centro_Costo', 'Centro Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'Centro de Costo', 'CC') ?? '').trim();
 
         const newOrgId = resolveEntity(orgName, orgsArr);
         const newPaisId = resolveEntity(paisName, paisesArr);
         const newCompId = resolveEntity(compName, compArr);
+        const newCcId = resolveEntity(ccName, ccArr);
 
         if (String(current.organizacion_id ?? '') !== String(newOrgId ?? '')) changes.organizacion_id = newOrgId;
         if (String(current.pais_id ?? '') !== String(newPaisId ?? '')) changes.pais_id = newPaisId;
         if (String(current.compania_id ?? '') !== String(newCompId ?? '')) changes.compania_id = newCompId;
+        if (String(current.centro_costo_id ?? '') !== String(newCcId ?? '')) changes.centro_costo_id = newCcId;
 
         if (Object.keys(changes).length > 0) {
           updates.push({ id, changes });
