@@ -19,6 +19,7 @@ const allNavItems: NavItem[] = [
   { path: '/presupuestos', label: 'Presupuestos', icon: 'ri-file-list-3-line', module: 'presupuestos' },
   { path: '/activacion-cuentas', label: 'Activación de Cuentas', icon: 'ri-toggle-line', module: 'activacion-cuentas' },
   { path: '/factores', label: 'Tasas', icon: 'ri-line-chart-line', module: 'factores' },
+  { path: '/proyeccion-gyp', label: 'Proyección GyP', icon: 'ri-bar-chart-box-line', module: 'proyeccion-gyp' },
   { path: '/historial-cambios', label: 'Historial', icon: 'ri-history-line', module: 'historial-cambios' },
 ];
 

@@ -11,6 +11,7 @@ import ConfiguracionPage from "../pages/configuracion/page";
 import PresupuestosPage from "../pages/presupuestos/page";
 import FactoresPage from "../pages/factores/page";
 import HistorialCambiosPage from "../pages/historial-cambios/page";
+import ProyeccionGypPage from "../pages/proyeccion-gyp/page";
 
 const routes: RouteObject[] = [
   {
@@ -34,6 +35,7 @@ const routes: RouteObject[] = [
       { path: "/factores", element: <FactoresPage /> },
       { path: "/historial-cambios", element: <HistorialCambiosPage /> },
       { path: "/asientos-extracontables", element: <CuentasAjustadasPage /> },
+      { path: "/proyeccion-gyp", element: <ProyeccionGypPage /> },
     ],
   },
   {
