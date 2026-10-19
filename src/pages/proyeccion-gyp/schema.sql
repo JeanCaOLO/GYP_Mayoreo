@@ -98,11 +98,13 @@ create table if not exists gyp_historico_mensual (
   empresa              text    not null,
   concepto             text    not null,
   dim_subclasificacion text    not null default '',
-  subgrupo             text,
+  -- subgrupo entra en la PK, así que no puede ser nulo: un subgrupo ausente
+  -- se guarda como '' (Postgres no admite funciones como coalesce() en una PK).
+  subgrupo             text    not null default '',
   monto_usd            numeric not null,
   monto_local          numeric,
   es_venta             boolean not null default false,
-  primary key (periodo, empresa, dim_subclasificacion, coalesce(subgrupo,''))
+  primary key (periodo, empresa, dim_subclasificacion, subgrupo)
 );
 
 -- ---------------------------------------------------------------------------
@@ -251,4 +253,74 @@ on conflict (periodo, empresa, combinada) do update set
 -- Validacion: con promedio de 9 meses y estos datos, el Semi Neto debe dar
 -- Beval 45.934 | Febeca 1.165.313 | Sillaca 79.476 | Cofersa -130.077 |
 -- Mundial -92.939 | Prisma 48.477 (total 1.116.184).
+-- ============================================================================
+
+-- ============================================================================
+-- 5. Vista de entrega: v_proyeccion_final
+--    Contrato con Fabric (documento 08). Es el UNICO objeto que Fabric lee.
+--    Fabric NO reconstruye la proyeccion: lee esta vista ya resuelta, con la
+--    forma exacta del mayor (las 12 columnas de F_Mayor + Proyeccion) y la pega
+--    al reporte.
+--
+--    Grano: una fila por (periodo, Combinada). Como proyeccion_resultado
+--    INSERTA en cada corrida, aqui nos quedamos con la ULTIMA version de cada
+--    llave (DISTINCT ON por calculado_en, id). Asi, aunque control pulse
+--    "calcular" varias veces, el mes no sale multiplicado (08 §3).
+--
+--    Los nombres de columna van con mayusculas EXACTAS: el modelo semantico de
+--    Fabric los referencia uno a uno.
+-- ============================================================================
+create or replace view v_proyeccion_final as
+select distinct on (periodo, combinada)
+       fecha            as "FECHA",            -- dia 1 del periodo (08 §4)
+       ajuste           as "Ajuste",           -- siempre 0
+       vista            as "Vista",            -- siempre 'GYP'
+       combinada        as "Combinada",        -- CUENTA-CENTROCOSTO-EMPRESA (08 §5)
+       pais             as "Pais",             -- derivado de la empresa
+       empresa          as "Empresa",
+       tasa_mensual     as "Tasa_Mensual",     -- NULA en las venezolanas (08 §6)
+       ajuste_usd       as "Ajuste_USD",       -- siempre 0
+       monto_local      as "Monto_Local",
+       monto_usd        as "Monto_USD",
+       centro_costo     as "CENTRO_COSTO",
+       cuenta_contable  as "CUENTA_CONTABLE",
+       proyeccion       as "Proyeccion",       -- siempre 1
+       periodo,                                -- control: llave junto con Combinada
+       calculado_en                            -- control: cuando se calculo
+from proyeccion_resultado
+order by periodo, combinada, calculado_en desc, id desc;
+
+-- ============================================================================
+-- 6. Comprobaciones que el aplicativo puede correr solo (08 §10).
+--    Cada una debe devolver 0 filas. Ejecutarlas tras publicar un periodo.
+-- ============================================================================
+
+-- 6.1 Grano: ninguna (periodo, Combinada) puede repetirse.
+-- select periodo, "Combinada", count(*)
+-- from v_proyeccion_final group by 1, 2 having count(*) > 1;
+
+-- 6.2 Constantes: Proyeccion=1, Vista='GYP', Ajuste=0, Ajuste_USD=0, dia 1.
+-- select * from v_proyeccion_final
+-- where "Proyeccion" <> 1 or "Vista" <> 'GYP'
+--    or "Ajuste" <> 0 or "Ajuste_USD" <> 0
+--    or extract(day from "FECHA") <> 1;
+
+-- 6.3 Tasa (al reves de lo intuitivo): las venezolanas deben tener tasa NULA.
+-- select * from v_proyeccion_final
+-- where ("Empresa" in ('Beval','Febeca','Sillaca','Prisma') and "Tasa_Mensual" is not null)
+--    or ("Empresa" in ('Cofersa','Mundial')                 and "Tasa_Mensual" is null);
+
+-- 6.4 Signos: la venta proyectada de cada empresa debe salir NEGATIVA.
+-- select "Empresa", sum("Monto_USD")
+-- from v_proyeccion_final
+-- where "CUENTA_CONTABLE" in (
+--   '4.1.1.01.2.001',  -- Ventas Venezuela (Beval/Febeca/Sillaca)
+--   '4-01-01-01-00',   -- Ventas Cofersa
+--   '4-1-35-06-01',    -- Ventas Mundial
+--   '6.1.1.20.1.001'   -- Colocacion Prisma
+-- )
+-- group by 1;
+
+-- ============================================================================
+-- Fin de la vista de entrega. Fabric carga v_proyeccion_final via copyjob.
 -- ============================================================================

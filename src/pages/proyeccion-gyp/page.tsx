@@ -227,7 +227,8 @@ export default function ProyeccionGypPage() {
     try {
       const filas: FilaResultado[] = reglas.map((r, i) => ({
         periodo: data.periodo,
-        fecha: data.periodo + '-31',
+        // Contrato (08 §4): día 1 del periodo, nunca fin de mes.
+        fecha: data.periodo + '-01',
         vista: 'GYP',
         combinada: r.combinada,
         pais: r.pais,
@@ -256,7 +257,7 @@ export default function ProyeccionGypPage() {
       'FECHA;Ajuste;Vista;Combinada;Pais;Empresa;Tasa_Mensual;Ajuste_USD;Monto_Local;Monto_USD;CENTRO_COSTO;CUENTA_CONTABLE;Proyeccion';
     const lineas = reglas.map((r, i) =>
       [
-        data.periodo + '-31',
+        data.periodo + '-01',
         0,
         'GYP',
         r.combinada,
@@ -727,7 +728,7 @@ export default function ProyeccionGypPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
-            <span className="font-mono text-xs text-slate-500">{reglas.length} filas · FECHA {data.periodo}-31 · Proyeccion = 1</span>
+            <span className="font-mono text-xs text-slate-500">{reglas.length} filas · FECHA {data.periodo}-01 · Proyeccion = 1</span>
             <div className="ml-auto flex gap-2">
               <button onClick={copiarCsv} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">
                 Copiar como CSV
@@ -759,7 +760,7 @@ export default function ProyeccionGypPage() {
               <tbody>
                 {reglas.map((r, i) => (
                   <tr key={r.key} className={`border-t border-slate-100 ${r.nueva ? 'bg-emerald-50/40' : ''}`}>
-                    <td className="px-3 py-2 font-mono text-[11px]">{data.periodo}-31</td>
+                    <td className="px-3 py-2 font-mono text-[11px]">{data.periodo}-01</td>
                     <td className="px-3 py-2">GYP</td>
                     <td className="px-3 py-2 font-mono text-[11px]">{r.combinada}</td>
                     <td className="px-3 py-2">{r.pais}</td>
