@@ -256,3 +256,46 @@ export async function publicarResultado(periodo: string, filas: FilaResultado[])
     if (error) throw error;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Refrescar desde Fabric (opción A): invoca la Edge Function que consulta
+// Fabric y escribe los insumos en Supabase. El navegador NO habla con Fabric;
+// solo llama a la función por HTTPS.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RefrescoFabric {
+  ok: boolean;
+  escrito: boolean;
+  periodo?: string;
+  corte?: string;
+  generado?: string;
+  conceptos?: number;
+  errores?: string[];
+  error?: string;
+  log?: string[];
+}
+
+/**
+ * Dispara la extracción de Fabric → Supabase. Devuelve el resultado para que la
+ * interfaz avise si las guardas frenaron la escritura (corte sin avanzar, etc.).
+ * Tras un refresco con éxito hay que volver a llamar cargarDesdeSupabase().
+ */
+export async function refrescarDesdeFabric(periodo?: string): Promise<RefrescoFabric> {
+  const { data, error } = await supabase.functions.invoke('refrescar-proyeccion-fabric', {
+    body: periodo ? { periodo } : {},
+  });
+  if (error) {
+    // La función devuelve 409/500 con cuerpo JSON; supabase-js lo expone en context.
+    const ctx = (error as unknown as { context?: { body?: unknown } }).context;
+    if (ctx?.body) {
+      try {
+        const parsed = typeof ctx.body === 'string' ? JSON.parse(ctx.body) : ctx.body;
+        return parsed as RefrescoFabric;
+      } catch {
+        /* cae al throw de abajo */
+      }
+    }
+    throw error;
+  }
+  return data as RefrescoFabric;
+}

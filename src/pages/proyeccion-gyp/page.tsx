@@ -22,6 +22,7 @@ import {
   cargarDesdeSupabase,
   ensamblarReglas,
   publicarResultado,
+  refrescarDesdeFabric,
   type ProyeccionData,
   type ReglaBase,
   type FilaResultado,
@@ -143,10 +144,30 @@ export default function ProyeccionGypPage() {
   const sn = tot('sn');
   const dsn = sn - snBase;
 
-  // ── Carga desde Supabase (opcional) ──
+  // ── Carga desde Supabase. Si es manual, primero dispara la extracción de
+  //    Fabric (Edge Function refrescar-proyeccion-fabric) y luego recarga lo que
+  //    quedó en Supabase. ──
   const traer = useCallback(
     async (manual: boolean) => {
       const seed = construirDesdeSemilla();
+
+      // Paso 1 (solo manual): pedirle al backend que consulte Fabric y escriba.
+      if (manual) {
+        try {
+          const r = await refrescarDesdeFabric(seed.periodo);
+          if (!r.escrito) {
+            // Las guardas del documento 07 frenaron la escritura (no es un fallo).
+            const motivo = (r.errores && r.errores[0]) || r.error || 'guardas no superadas';
+            addToast('error', `Fabric no actualizó: ${motivo}. Se conservan los últimos datos buenos.`);
+          } else {
+            addToast('success', `Fabric extraído: ${r.conceptos ?? '—'} conceptos, datos al ${r.corte || '—'}.`);
+          }
+        } catch (err) {
+          addToast('error', 'No se pudo consultar Fabric: ' + (err as Error).message);
+        }
+      }
+
+      // Paso 2: recargar desde Supabase (haya o no corrido Fabric).
       try {
         const nuevo = await cargarDesdeSupabase(seed.periodo, seed);
         setData(nuevo);
@@ -154,7 +175,7 @@ export default function ProyeccionGypPage() {
         if (manual)
           addToast(
             'success',
-            `Actualización completada — Fabric del ${nuevo.generado || '—'}, datos al ${nuevo.corte || '—'}. 6 empresas y ${nuevo.reglasBase.length} reglas recalculadas.`,
+            `Pantalla actualizada — datos al ${nuevo.corte || '—'}. 6 empresas y ${nuevo.reglasBase.length} reglas recalculadas.`,
           );
       } catch {
         setData((d) => ({ ...d, fuente: manual ? 'error' : d.fuente }));
