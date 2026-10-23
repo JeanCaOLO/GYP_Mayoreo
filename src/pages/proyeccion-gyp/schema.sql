@@ -262,16 +262,26 @@ on conflict (periodo, empresa, combinada) do update set
 --    forma exacta del mayor (las 12 columnas de F_Mayor + Proyeccion) y la pega
 --    al reporte.
 --
---    Grano: una fila por (periodo, Combinada). Como proyeccion_resultado
---    INSERTA en cada corrida, aqui nos quedamos con la ULTIMA version de cada
---    llave (DISTINCT ON por calculado_en, id). Asi, aunque control pulse
---    "calcular" varias veces, el mes no sale multiplicado (08 §3).
+--    Grano: una fila por (periodo, escenario, Combinada). Como
+--    proyeccion_resultado INSERTA en cada corrida, aqui nos quedamos con la
+--    ULTIMA version de cada llave (DISTINCT ON por calculado_en, id). Asi,
+--    aunque control pulse "calcular" varias veces, el mes no sale multiplicado
+--    (08 §3). El escenario entra en la llave para que la vista devuelva el
+--    APPEND de los dos escenarios (Proyectado + Causado), ~190 filas para
+--    2026-10 en vez de 95 (12 §5, CP-01).
+--
+--    "Proyeccion" refleja el ESCENARIO: 1 = Proyectado al cierre, 2 = Causado
+--    al corte (12 §5, 08). Se mapea desde la columna `escenario`, no desde el
+--    valor fijo de `proyeccion`, para que Power BI pueda filtrar y armar cada
+--    escenario por separado.
 --
 --    Los nombres de columna van con mayusculas EXACTAS: el modelo semantico de
 --    Fabric los referencia uno a uno.
 -- ============================================================================
-create or replace view v_proyeccion_final as
-select distinct on (periodo, combinada)
+drop view if exists v_proyeccion_final cascade;
+
+create view v_proyeccion_final as
+select distinct on (periodo, escenario, combinada)
        fecha            as "FECHA",            -- dia 1 del periodo (08 §4)
        ajuste           as "Ajuste",           -- siempre 0
        vista            as "Vista",            -- siempre 'GYP'
@@ -284,24 +294,26 @@ select distinct on (periodo, combinada)
        monto_usd        as "Monto_USD",
        centro_costo     as "CENTRO_COSTO",
        cuenta_contable  as "CUENTA_CONTABLE",
-       proyeccion       as "Proyeccion",       -- siempre 1
+       escenario::integer as "Proyeccion",       -- 1 = Proyectado, 2 = Causado (12 §5)
        periodo,                                -- control: llave junto con Combinada
        calculado_en                            -- control: cuando se calculo
 from proyeccion_resultado
-order by periodo, combinada, calculado_en desc, id desc;
+order by periodo, escenario, combinada, calculado_en desc, id desc;
 
 -- ============================================================================
 -- 6. Comprobaciones que el aplicativo puede correr solo (08 §10).
 --    Cada una debe devolver 0 filas. Ejecutarlas tras publicar un periodo.
 -- ============================================================================
 
--- 6.1 Grano: ninguna (periodo, Combinada) puede repetirse.
--- select periodo, "Combinada", count(*)
--- from v_proyeccion_final group by 1, 2 having count(*) > 1;
+-- 6.1 Grano: ninguna (periodo, Proyeccion, Combinada) puede repetirse.
+--     El escenario entra en la llave: cada Combinada aparece una vez por
+--     escenario (append de los dos).
+-- select periodo, "Proyeccion", "Combinada", count(*)
+-- from v_proyeccion_final group by 1, 2, 3 having count(*) > 1;
 
--- 6.2 Constantes: Proyeccion=1, Vista='GYP', Ajuste=0, Ajuste_USD=0, dia 1.
+-- 6.2 Constantes: Proyeccion in (1,2), Vista='GYP', Ajuste=0, Ajuste_USD=0, dia 1.
 -- select * from v_proyeccion_final
--- where "Proyeccion" <> 1 or "Vista" <> 'GYP'
+-- where "Proyeccion" not in (1, 2) or "Vista" <> 'GYP'
 --    or "Ajuste" <> 0 or "Ajuste_USD" <> 0
 --    or extract(day from "FECHA") <> 1;
 
@@ -324,3 +336,236 @@ order by periodo, combinada, calculado_en desc, id desc;
 -- ============================================================================
 -- Fin de la vista de entrega. Fabric carga v_proyeccion_final via copyjob.
 -- ============================================================================
+
+-- ============================================================================
+-- MIGRACIÓN §4 — Esquema propuesto para producción (12-cambios-para-produccion.md)
+-- ----------------------------------------------------------------------------
+-- Este bloque amplía el esquema anterior para soportar los dos escenarios de
+-- salida, el modelo de reglas v2, las fórmulas propias, el detalle por cuenta
+-- de Fabric, el catálogo, las alertas, la programación y la bitácora de
+-- corridas.
+--
+-- Todo el bloque es IDEMPOTENTE (`IF NOT EXISTS` en columnas, índices y
+-- tablas): puede correrse sobre una base que ya tiene datos sin borrarlos ni
+-- duplicarlos. Las tablas nuevas se crean ANTES de las columnas que las
+-- referencian (proyeccion_formula antes de proyeccion_regla.formula_id) para
+-- que las claves foráneas no fallen.
+-- ============================================================================
+
+-- ---------------------------------------------------------------------------
+-- §4.1 Tablas nuevas que son referenciadas por otras (crear primero)
+--      proyeccion_formula se crea ANTES de añadir proyeccion_regla.formula_id,
+--      que la referencia por clave foránea.
+-- ---------------------------------------------------------------------------
+
+-- Métodos y fórmulas propias.
+create table if not exists proyeccion_formula (
+  id         bigserial primary key,
+  nombre     text    not null,
+  pasos      jsonb   not null,                 -- las piezas
+  orden      smallint not null default 1,      -- turno; se deduce de las bases
+  invertir   boolean not null default false,
+  causado    text    not null default 'igual',
+  de_fabrica boolean not null default false,
+  rev        integer not null default 0
+);
+
+-- ---------------------------------------------------------------------------
+-- §4.2 Salida: segundo escenario en proyeccion_resultado
+--      escenario = 1 (Proyectado al cierre) | 2 (Causado al corte).
+--      La llave única garantiza una sola fila por (periodo, escenario,
+--      combinada): republicar reemplaza en vez de acumular.
+-- ---------------------------------------------------------------------------
+alter table proyeccion_resultado
+  add column if not exists escenario smallint not null default 1;
+
+create unique index if not exists ux_proy_resultado
+  on proyeccion_resultado (periodo, escenario, combinada);
+
+-- ---------------------------------------------------------------------------
+-- §4.3 Reglas v2: 14 columnas nuevas en proyeccion_regla
+--      formula_id referencia proyeccion_formula(id), ya creada arriba.
+-- ---------------------------------------------------------------------------
+alter table proyeccion_regla
+  add column if not exists nombre          text,
+  add column if not exists detalle         text,
+  add column if not exists causado         text    not null default 'igual',    -- igual|habiles|calendario|real
+  add column if not exists escenarios      text    not null default 'AMBOS',    -- AMBOS|PROYECCION|CAUSADO
+  add column if not exists nivel           text    not null default 'concepto', -- concepto|cuenta
+  add column if not exists n               smallint,                            -- meses a mirar
+  add column if not exists destino         jsonb,                               -- capas + reparto
+  add column if not exists formula_id      bigint references proyeccion_formula(id),
+  add column if not exists eliminada       boolean not null default false,
+  add column if not exists rev             integer not null default 0,
+  add column if not exists wid             text,
+  add column if not exists actualizado     timestamptz,
+  add column if not exists actualizado_por text;
+
+-- ---------------------------------------------------------------------------
+-- §4.4 Detalle por cuenta que empuja Fabric
+-- ---------------------------------------------------------------------------
+create table if not exists gyp_historico_cuenta (
+  periodo      text,
+  empresa      text,
+  combinada    text,
+  cuenta       text,
+  centro_costo text,
+  concepto     text,
+  acumulado    numeric,
+  presupuesto  numeric,
+  meses        jsonb,                           -- los 12 meses anteriores
+  primary key (periodo, combinada)
+);
+
+-- ---------------------------------------------------------------------------
+-- §4.5 Catálogo de cuentas con sus capas
+-- ---------------------------------------------------------------------------
+create table if not exists dim_cuenta (
+  combinada    text primary key,
+  empresa      text,
+  pais         text,
+  cuenta       text,
+  centro_costo text,
+  descripcion  text,
+  seccion      text,
+  linea        text,
+  detalle      text,
+  concepto     text
+);
+
+-- ---------------------------------------------------------------------------
+-- §4.6 Alertas de revisión del catálogo
+-- ---------------------------------------------------------------------------
+create table if not exists proyeccion_alerta (
+  periodo        text,
+  combinada      text,
+  accion         text,                          -- crear|corregir|clasificar
+  sugerencia     text,
+  movimiento_mes numeric,
+  movimiento_12m numeric,
+  ultimo_mes     numeric,
+  primary key (periodo, combinada)
+);
+
+-- ---------------------------------------------------------------------------
+-- §4.7 Actualización programada (CP-56). Fila única id = 1.
+-- ---------------------------------------------------------------------------
+create table if not exists proyeccion_programacion (
+  id          smallint primary key default 1,
+  activa      boolean not null default false,
+  frecuencia  text    not null default 'diaria',       -- diaria|habiles|semanal
+  dia_semana  smallint,                                -- 1..7, solo si frecuencia = 'semanal'
+  hora_local  time    not null default '06:00',        -- HORA DE PUBLICACION, EN CARACAS
+  zona        text    not null default 'America/Caracas',
+  exige_datos_frescos boolean not null default true,   -- no publica con datos viejos
+  periodo     text,                                    -- null = el mes de trabajo vigente
+  rev         integer not null default 0,
+  actualizado_por text
+);
+-- Garantizar la fila única id = 1 sin pisar la configuración existente.
+insert into proyeccion_programacion (id, activa, frecuencia, hora_local)
+  values (1, false, 'diaria', '06:00')
+on conflict (id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- §4.8 Bitácora de cada corrida, programada o manual (CP-14 y CP-56)
+-- ---------------------------------------------------------------------------
+create table if not exists proyeccion_corrida (
+  id          bigserial primary key,
+  periodo     text    not null,
+  origen      text    not null,                 -- programada|manual
+  paso        text    not null,                 -- extraccion|calculo|publicacion
+  estado      text    not null,                 -- en_curso|ok|error|omitida
+  inicio      timestamptz not null default now(),
+  fin         timestamptz,
+  filas       integer,
+  corte       date,                             -- hasta qué día traía datos la extracción
+  mensaje     text,
+  lanzada_por text
+);
+create index if not exists ix_corrida on proyeccion_corrida (periodo, inicio desc);
+
+-- ============================================================================
+-- Fin de la migración §4. El script completo sigue siendo ejecutable de
+-- principio a fin en el SQL Editor de Supabase, preservando los datos previos.
+-- ============================================================================
+
+-- ============================================================================
+-- §4.9 RPC de publicación idempotente transaccional (CP-02 / CP-03)
+--
+--      PostgREST / supabase-js NO exponen transacciones multi-statement desde
+--      el cliente: un DELETE y un INSERT separados viajan como dos peticiones
+--      independientes, y si el proceso cae entre ambas el escenario queda
+--      vacío o a medias. Esta función hace DELETE + INSERT dentro de UNA sola
+--      transacción del lado servidor (el cuerpo de una función plpgsql corre en
+--      su propia transacción), de modo que publicar un escenario es atómico:
+--      todo o nada. La Edge Function `publicar-proyeccion` la invoca una vez por
+--      escenario.
+--
+--      Idempotencia (CP-03): borra TODAS las filas de (periodo, escenario) antes
+--      de insertar, así republicar el mismo mes REEMPLAZA en vez de ACUMULAR.
+--      El índice único ux_proy_resultado (periodo, escenario, combinada) impide
+--      duplicados dentro del lote; las filas deben venir ya fusionadas por
+--      Combinada (CP-06) desde la Edge Function.
+--
+--      Entrada:
+--        p_periodo   text    · periodo aaaa-mm (o aaaa-mm-dd)
+--        p_escenario smallint· 1 = Proyectado al cierre | 2 = Causado al corte
+--        p_filas     jsonb   · arreglo de objetos con las 13 columnas del
+--                              contrato de salida (claves en minúscula, igual
+--                              que FilaResultado). `escenario` se fija aquí con
+--                              p_escenario; `fecha` se castea a date.
+--      Salida: cantidad de filas insertadas (integer).
+--
+--      SECURITY DEFINER para que la escritura use los permisos del dueño del
+--      esquema (la Edge Function ya la llama con el service role).
+-- ----------------------------------------------------------------------------
+create or replace function publicar_proyeccion(
+  p_periodo   text,
+  p_escenario smallint,
+  p_filas     jsonb
+) returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_insertadas integer;
+begin
+  if p_filas is null or jsonb_typeof(p_filas) <> 'array' then
+    raise exception 'publicar_proyeccion: p_filas debe ser un arreglo jsonb (recibido: %)', jsonb_typeof(p_filas);
+  end if;
+
+  -- 1) Vaciar el escenario del periodo (idempotencia: reemplazar, no acumular).
+  delete from proyeccion_resultado
+   where periodo = p_periodo
+     and escenario = p_escenario;
+
+  -- 2) Insertar las filas del lote, forzando el escenario del parámetro.
+  insert into proyeccion_resultado (
+    periodo, fecha, ajuste, vista, combinada, pais, empresa,
+    tasa_mensual, ajuste_usd, monto_local, monto_usd,
+    centro_costo, cuenta_contable, proyeccion, escenario
+  )
+  select
+    p_periodo,
+    (f->>'fecha')::date,
+    coalesce((f->>'ajuste')::numeric, 0),
+    coalesce(f->>'vista', 'GYP'),
+    f->>'combinada',
+    coalesce(f->>'pais', ''),
+    f->>'empresa',
+    nullif(f->>'tasa_mensual', '')::numeric,
+    coalesce((f->>'ajuste_usd')::numeric, 0),
+    (f->>'monto_local')::numeric,
+    (f->>'monto_usd')::numeric,
+    f->>'centro_costo',
+    f->>'cuenta_contable',
+    coalesce((f->>'proyeccion')::int, p_escenario),
+    p_escenario
+  from jsonb_array_elements(p_filas) as f;
+
+  get diagnostics v_insertadas = row_count;
+  return v_insertadas;
+end;
+$$;

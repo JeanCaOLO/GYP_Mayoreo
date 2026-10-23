@@ -1,8 +1,9 @@
 /**
  * Semilla validada por control de la Proyección del GyP Mayoreo.
  *
- * Contiene los 6 métodos de fábrica, las 95 reglas vigentes, los parámetros por
- * empresa y la foto histórica embebida (acumulado + serie mensual por cuenta).
+ * Contiene los 10 métodos de fábrica del §D, las 95 reglas vigentes, los
+ * parámetros por empresa y la foto histórica embebida (acumulado + serie mensual
+ * por cuenta).
  *
  * Esta foto permite que el módulo abra completo y calcule las cifras de
  * aceptación aunque Supabase todavía no tenga datos. Cuando la base responde,
@@ -31,11 +32,38 @@ export const CIFRAS_VALIDADAS: Record<string, number> = {
 // Métodos de fábrica
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Biblioteca de métodos de fábrica (Parte II §D de 12-cambios-para-produccion).
+ *
+ * Cada método trae su operación, valor por defecto, turno (`orden`) y causado por
+ * defecto del §D. El promedio por defecto (N) es 9 meses; vive en el motor (`gn`)
+ * y no se guarda aquí, por lo que no aparece en estos registros.
+ *
+ * Los cuatro métodos nuevos respecto a la v1 —`m_mediana`, `m_ultimo`,
+ * `m_ratio_venta`, `m_ppto`— se agregaron con la parametrización por backtest de
+ * octubre 2026. Son solo biblioteca: las 95 REGLAS_SEED siguen usando los mismos
+ * métodos que la v1, así que estos nuevos métodos NO mueven los 190 casos. La
+ * reasignación de reglas a estos métodos es la parametrización de octubre (otra
+ * fase, tarea 13.1).
+ *
+ * Restricciones del §D:
+ *   - `m_pct_semineto` solo aplica al grupo Impuesto (ISLR).
+ *   - `m_derivada` solo aplica a la Colocación de Prisma.
+ *
+ * El tipo `Metodo` v1 (op/base/valor/invertir/orden/fijo) se conserva: el motor
+ * expresa cada método como un `MetodoV2` de un paso y evalúa con el fold de pasos.
+ * Las operaciones nuevas (`mediana`, `ultimo`, `ratio_venta`, `presupuesto`) ya se
+ * evalúan en `evaluarPaso` del motor v2.
+ */
 export const METODOS_BASE: Record<string, Metodo> = {
   m_venta: { id: 'm_venta', nombre: 'Fórmula de venta', op: 'formula_venta', base: 'ninguna', valor: null, invertir: false, orden: 1, fijo: true },
   m_promedio: { id: 'm_promedio', nombre: 'Promedio histórico', op: 'promedio', base: 'ninguna', valor: null, invertir: false, orden: 2, fijo: true },
+  m_mediana: { id: 'm_mediana', nombre: 'Mediana histórica', op: 'mediana', base: 'ninguna', valor: null, invertir: false, orden: 2, fijo: true },
+  m_ultimo: { id: 'm_ultimo', nombre: 'Último mes cerrado', op: 'ultimo', base: 'ninguna', valor: null, invertir: false, orden: 2, fijo: true },
+  m_ppto: { id: 'm_ppto', nombre: 'Presupuesto del mes', op: 'presupuesto', base: 'ninguna', valor: null, invertir: false, orden: 2, fijo: true },
   m_fijo: { id: 'm_fijo', nombre: 'Monto fijo', op: 'valor_fijo', base: 'ninguna', valor: 0, invertir: false, orden: 2, fijo: true },
   m_pct_venta: { id: 'm_pct_venta', nombre: '% sobre venta', op: 'porcentaje', base: 'venta', valor: 0.01, invertir: true, orden: 3, fijo: true },
+  m_ratio_venta: { id: 'm_ratio_venta', nombre: 'Proporción histórica de la venta', op: 'ratio_venta', base: 'venta', valor: null, invertir: false, orden: 3, fijo: true },
   m_derivada: { id: 'm_derivada', nombre: 'Derivada (Cargo Fijo)', op: 'derivada', base: 'ninguna', valor: null, invertir: false, orden: 4, fijo: true },
   m_pct_semineto: { id: 'm_pct_semineto', nombre: '% sobre Semi Neto', op: 'porcentaje', base: 'semineto', valor: 0.009, invertir: false, orden: 5, fijo: true },
 };

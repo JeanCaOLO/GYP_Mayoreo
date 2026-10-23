@@ -1,0 +1,804 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Reescribir `src/pages/proyeccion-gyp/schema.sql` como migración idempotente del §4": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760657821
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760666688
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760750574
+      }
+    ],
+    "1.2 Crear el espejo versionado `supabase/migrations/NNNN_proyeccion_produccion.sql`": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760657887
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760757478
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761131577
+      }
+    ],
+    "2.1 Implementar el contrato de las 13 columnas y las transformaciones CP-04/05/52": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760657965
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761136466
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761253648
+      }
+    ],
+    "2.2 Implementar fusión por Combinada y validación contra catálogo": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658024
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761269776
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761401347
+      }
+    ],
+    "3.1 Implementar la publicación idempotente transaccional de los dos escenarios": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658079
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761406206
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792767015307
+      }
+    ],
+    "3.2 Actualizar `v_proyeccion_final` para el append de los dos escenarios": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658140
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761270972
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761402239
+      }
+    ],
+    "4. Compuerta Fase 1 — Verificar que los 190 casos siguen igual": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658221
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792767019755
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792767028325
+      }
+    ],
+    "5.1 Implementar el modelo de pasos compuestos y las nuevas operaciones (CP-18, §D)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658282
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792767156390
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770747399
+      }
+    ],
+    "5.2 Implementar la fórmula de venta y los turnos de cálculo (§B, §C)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658339
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770959265
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771212461
+      }
+    ],
+    "5.3 Implementar los dos escenarios y la detección de ciclos (§H, CP-49, CP-51)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658400
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771219552
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771491830
+      }
+    ],
+    "6.1 Implementar la resolución de bases por capas y el origen con medida (CP-16, CP-17)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658459
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770754524
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770950552
+      }
+    ],
+    "7.1 Implementar los cuatro modos de causado (§E, CP-19)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658531
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770755921
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770951933
+      }
+    ],
+    "8.1 Implementar el reparto entre cuentas de destino (§F, CP-20)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658597
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770757097
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770952879
+      }
+    ],
+    "8.2 Implementar reglas por cuenta y \"el resto\" (CP-21)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658661
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771495873
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771673695
+      }
+    ],
+    "9.1 Implementar los métodos de fábrica del §D": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658721
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770960134
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771213643
+      }
+    ],
+    "10.1 Implementar la suite de 190 casos como oráculo del motor": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658780
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771677293
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771975718
+      }
+    ],
+    "11. Compuerta Fase 2 — Ensure all tests pass, ask the user if questions arise.": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658837
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771976644
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771992797
+      }
+    ],
+    "12.1 Implementar la lectura nueva (detalle por cuenta, catálogo, alertas, presupuesto, tasas)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658909
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771999531
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772160197
+      }
+    ],
+    "12.2 Implementar concurrencia, autor, borrado lógico y realtime": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760658976
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772165442
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772307257
+      }
+    ],
+    "12.3 Implementar la persistencia compartida en Supabase (CP-37)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659035
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772308266
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772465704
+      }
+    ],
+    "13.1 Implementar la carga de la parametrización de octubre (CP-42)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659090
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772000504
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772161084
+      }
+    ],
+    "14. Compuerta Fase 3 — Ensure all tests pass, ask the user if questions arise.": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659143
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772470041
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772481705
+      }
+    ],
+    "15.1 Implementar el backtest WAPE del §G": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659197
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772487717
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772954616
+      }
+    ],
+    "16.1 Implementar la estructura de 7 pestañas, cabecera de KPIs y sello de frescura": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659252
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772488998
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772953932
+      }
+    ],
+    "16.2 Implementar la pestaña Reglas con panel de estimación, \"Así quedaría\" y validaciones": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659310
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772959902
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774109303
+      }
+    ],
+    "16.3 Implementar la pestaña Mis fórmulas": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659364
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774295271
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774622115
+      }
+    ],
+    "16.4 Implementar la pestaña Parámetros y mes de trabajo": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659419
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772961295
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774294290
+      }
+    ],
+    "16.5 Implementar la pestaña Alertas y la plantilla del catálogo": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659472
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774296494
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774623279
+      }
+    ],
+    "16.6 Implementar las pestañas Resultado, Comparar y Tabla de salida con la prueba contable": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659526
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772962381
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792773457993
+      }
+    ],
+    "17. Compuerta Fase 4 — Ensure all tests pass, ask the user if questions arise.": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659581
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774628873
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774713759
+      }
+    ],
+    "18.1 Implementar la suma corregida, serie de 12 meses y presupuesto (CP-08, CP-09, CP-10)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760659936
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774721357
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792775046983
+      }
+    ],
+    "18.2 Implementar el detalle por cuenta, dos meses, mes terminado y alertas (CP-11, CP-12, CP-13, CP-15)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760660045
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774728172
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792775048419
+      }
+    ],
+    "18.3 Implementar los botones manuales y el registro de corridas (CP-14)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760660152
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774729387
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792775049540
+      }
+    ],
+    "19. Compuerta Fase 5 — Ensure all tests pass, ask the user if questions arise.": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760660682
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792775054270
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792775064236
+      }
+    ],
+    "20.1 Implementar la Edge Function de corrida programada con guardias y hora de Caracas (CP-56)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760660857
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792775070277
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780112511
+      }
+    ],
+    "20.2 Implementar la UI de programación en Parámetros (CP-56)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760660965
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780113628
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780425170
+      }
+    ],
+    "21. Compuerta Fase 6 — Ensure all tests pass, ask the user if questions arise.": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760661183
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780426197
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780440297
+      }
+    ],
+    "22.1 Implementar el checklist de publicación (CP-44)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760661299
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780444894
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780632846
+      }
+    ],
+    "23.1 Ampliar la suite con los snapshots de control y el aviso en pantalla": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760661382
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780446041
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780634289
+      }
+    ],
+    "24. Compuerta final — Ensure all tests pass, ask the user if questions arise.": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792760661460
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780635592
+      },
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780652431
+      }
+    ],
+    "1. Migración de base de datos (§4) — primer paso, sin dependencias": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761131706
+      }
+    ],
+    "2. Capa de salida pura — `src/pages/proyeccion-gyp/salida.ts` (nuevo)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792761401466
+      }
+    ],
+    "3. Edge Function de publicación — `supabase/functions/publicar-proyeccion/index.ts` (nuevo)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792767015418
+      }
+    ],
+    "6. Bases por capas del catálogo — `src/pages/proyeccion-gyp/capas.ts` (nuevo)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770950670
+      }
+    ],
+    "7. Modos de causado — `src/pages/proyeccion-gyp/causado.ts` (nuevo)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792770952047
+      }
+    ],
+    "9. Métodos de fábrica y semilla — reescritura de `src/pages/proyeccion-gyp/seed.ts` y `series.ts`": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771213756
+      }
+    ],
+    "5. Motor v2 — reescritura de `src/pages/proyeccion-gyp/engine.ts`": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771491996
+      }
+    ],
+    "8. Destino y reparto — `src/pages/proyeccion-gyp/destino.ts` (nuevo)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771673870
+      }
+    ],
+    "10. Oráculo de 190 casos — `src/pages/proyeccion-gyp/engine.test.ts` (nuevo)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792771975885
+      }
+    ],
+    "13. Parametrización de octubre": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772161228
+      }
+    ],
+    "12. Capa de datos — reescritura de `src/pages/proyeccion-gyp/data.ts`": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772465850
+      }
+    ],
+    "15. Recomendación / backtest — `src/pages/proyeccion-gyp/wape.ts` (nuevo)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792772954762
+      }
+    ],
+    "16. Interfaz de 7 pestañas — reescritura de `src/pages/proyeccion-gyp/page.tsx` y componentes nuevos": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792774623404
+      }
+    ],
+    "18. Notebook de extracción — reescritura de `fabric/refrescar_proyeccion_fabric.py`": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792775049643
+      }
+    ],
+    "20. Corrida programada — `supabase/functions/corrida-programada/index.ts` (nuevo) + pg_cron": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780425272
+      }
+    ],
+    "22. Checklist antes de publicar — `src/pages/proyeccion-gyp/checklist.ts` (nuevo)": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780632950
+      }
+    ],
+    "23. Suite de 190 casos como compuerta permanente — `src/pages/proyeccion-gyp/engine.test.ts`": [
+      {
+        "executionId": "cd139b65-1c89-44dc-b382-4db7c6888f79",
+        "chatSessionId": "sess_d3cce4c1-b3a7-42f0-b0d3-0aa0bf64e82b",
+        "timestamp": 1792780634377
+      }
+    ]
+  }
+}
