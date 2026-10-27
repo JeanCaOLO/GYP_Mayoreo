@@ -39,7 +39,8 @@ create table if not exists proyeccion_metodo (
   nombre      text    not null,
   operacion   text    not null check (operacion in
                 ('porcentaje','multiplicar','sumar','restar',
-                 'valor_fijo','promedio','formula_venta','derivada')),
+                 'valor_fijo','promedio','formula_venta','derivada',
+                 'mediana','ultimo','ratio_venta','presupuesto')),
   base        text    not null default 'ninguna',
   valor       numeric,                          -- por defecto; % en tanto por uno
   invertir    boolean not null default false,
