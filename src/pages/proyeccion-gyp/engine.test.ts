@@ -419,3 +419,24 @@ describe('construirFilasEscenarios — los dos escenarios (CP-49 / FALLO 1)', ()
     }
   });
 });
+
+describe('Métodos que «Así quedaría» simula — ratio de la venta y presupuesto', () => {
+  const idx = reglas.findIndex((r) => r.concepto !== 'Ventas' && r.grupo === 'GOP');
+  const emp = reglas[idx].empresa;
+  const iVenta = reglas.findIndex((r) => r.empresa === emp && r.concepto === 'Ventas');
+
+  it('ratio_venta = (Σ concepto ÷ Σ venta de N meses) × venta del mes', () => {
+    const rs = reglas.map((r, i) => (i === idx ? { ...r, metodo: 'm_ratio_venta', n: 6 } : r));
+    const res = calcular({ reglas: rs, metodos, params, empresas: [...EMPRESAS], gn: GN });
+    const suma = (s: number[]) => s.slice(-6).filter((x) => !Number.isNaN(x)).reduce((a, b) => a + b, 0);
+    const esperado = (suma(rs[idx].serie) / suma(rs[iVenta].serie)) * res.venta[emp];
+    expect(res.val[idx]).not.toBe(0);
+    expect(res.val[idx]).toBeCloseTo(esperado, 6);
+  });
+
+  it('presupuesto toma el presupuesto del mes de la regla', () => {
+    const rs = reglas.map((r, i) => (i === idx ? { ...r, metodo: 'm_ppto', presupuesto: 1234.5 } : r));
+    const res = calcular({ reglas: rs, metodos, params, empresas: [...EMPRESAS], gn: GN });
+    expect(res.val[idx]).toBeCloseTo(1234.5, 6);
+  });
+});

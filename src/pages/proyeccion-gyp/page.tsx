@@ -33,6 +33,7 @@ import {
   type FilaResultado,
   type PresupuestoFila,
   type Alerta,
+  motivoError,
   type Programacion,
   type CambiosProgramacion,
   type Corrida,
@@ -48,6 +49,7 @@ import PestanaAlertas from './components/PestanaAlertas';
 import PestanaMisFormulas from './components/PestanaMisFormulas';
 import TrazaModal from './components/TrazaModal';
 import type { Traza } from './components/traza';
+import type { FilaHistoricoCuenta } from './capas';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Formato y constantes de pestañas
@@ -88,6 +90,8 @@ export default function ProyeccionGypPage() {
 
   // Presupuesto del periodo (para Comparar, CP-45) y traza «¿Por qué?» (CP-35).
   const [presupuesto, setPresupuesto] = useState<PresupuestoFila[]>([]);
+  // Detalle por cuenta del mes: cuentas que ofrece «+ Agregar regla».
+  const [detalleCuenta, setDetalleCuenta] = useState<FilaHistoricoCuenta[]>([]);
   // Alertas de revisión del catálogo del periodo (CP-34, pestaña Alertas).
   const [alertas, setAlertas] = useState<Alerta[]>([]);
   // Actualización programada (CP-56, pestaña Parámetros) y última publicación.
@@ -105,6 +109,13 @@ export default function ProyeccionGypPage() {
     metBorrados.forEach((k) => delete m[k]);
     return m;
   }, [data.metodos, metodosUser, metBorrados]);
+
+  // Presupuesto del mes por empresa|concepto (lo usa el método «presupuesto»).
+  const pptoPorConcepto = useMemo(() => {
+    const m = new Map<string, number>();
+    presupuesto.forEach((p) => m.set(kk(p.empresa, p.concepto), p.presupuesto));
+    return m;
+  }, [presupuesto]);
 
   // ── Lista de reglas de trabajo (base con overrides + nuevas) ──
   const reglas = useMemo<Regla[]>(() => {
@@ -127,6 +138,7 @@ export default function ProyeccionGypPage() {
         cuenta: o.cuenta ?? r.cuenta,
         cc: o.cc ?? r.cc,
         combinada: o.combinada ?? r.combinada,
+        presupuesto: pptoPorConcepto.get(kk(r.empresa, r.concepto)) ?? null,
       });
     });
     nuevas.forEach((x, i) => {
@@ -152,10 +164,11 @@ export default function ProyeccionGypPage() {
         nivel: x.nivel,
         causado: x.causado,
         escenarios: x.escenarios,
+        presupuesto: pptoPorConcepto.get(kk(x.empresa, x.concepto)) ?? null,
       });
     });
     return out;
-  }, [data.reglasBase, data.series, overrides, nuevas]);
+  }, [data.reglasBase, data.series, overrides, nuevas, pptoPorConcepto]);
 
   // ── Cálculo de los DOS escenarios (§H). La cabecera de KPIs necesita ambos. ──
   const escenarios = useMemo(
@@ -279,12 +292,14 @@ export default function ProyeccionGypPage() {
         if (vivo) {
           setPresupuesto(d.presupuesto);
           setAlertas(d.alertas);
+          setDetalleCuenta(d.historicoCuenta);
         }
       })
       .catch(() => {
         if (vivo) {
           setPresupuesto([]);
           setAlertas([]);
+          setDetalleCuenta([]);
         }
       });
     return () => {
@@ -363,13 +378,16 @@ export default function ProyeccionGypPage() {
     setNuevas((prev) => prev.map((x) => (x.id === id ? { ...x, rev } : x)));
   };
 
-  const avisarEscritura = (r: { ok: boolean; motivo?: string }, que: string) => {
+  const avisarEscritura = (r: { ok: boolean; motivo?: string; error?: unknown }, que: string) => {
     if (r.ok) return;
     if (r.motivo === 'conflicto') {
       addToast('error', `Otra persona cambió ${que} antes. Se recargaron las reglas; revisa y vuelve a guardar.`);
       traer(false);
     } else {
-      addToast('error', `No se pudo guardar ${que} en la base; el cambio queda solo en pantalla.`);
+      addToast(
+        'error',
+        `No se pudo guardar ${que} en la base (${motivoError(r.error)}); el cambio queda solo en pantalla.`,
+      );
     }
   };
 
@@ -494,7 +512,10 @@ export default function ProyeccionGypPage() {
         if (r.ok && r.id != null) {
           setNuevas((prev) => prev.map((y) => (y === x ? { ...y, id: r.id, rev: r.rev ?? 0 } : y)));
         } else {
-          addToast('error', `No se pudo guardar en la base la regla nueva ${x.empresa} · ${x.concepto}.`);
+          addToast(
+            'error',
+            `No se pudo guardar en la base la regla nueva ${x.empresa} · ${x.concepto}: ${motivoError(r.error)}.`,
+          );
         }
       });
     });
@@ -776,6 +797,7 @@ export default function ProyeccionGypPage() {
           onEliminarRegla={eliminarRegla}
           onRestaurarRegla={restaurarRegla}
           onCrearNuevas={crearNuevas}
+          detalleCuenta={detalleCuenta}
           onRestablecer={restablecer}
           onTraza={setTraza}
         />

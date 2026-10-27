@@ -29,8 +29,8 @@ import type { Override } from './PestanaReglas';
  *
  * Es un componente CONTROLADO liviano: edita un borrador local y al Guardar
  * emite los cambios a `onGuardar` (que los traduce a overrides en page.tsx). El
- * recálculo del impacto lo estima el panel con el método elegido; la cifra firme
- * la recalcula el motor tras guardar.
+ * impacto y el número de cada tarjeta salen del motor completo vía `simular`,
+ * así que coinciden con lo que queda al guardar.
  */
 
 const COLOR_SEMAFORO: Record<Semaforo, string> = {
@@ -184,6 +184,18 @@ export default function PanelRegla({
 
   // «Así quedaría» (CP-26): se recalcula cada vez que cambia la selección.
   const sim = useMemo(() => simular?.(cambios) ?? null, [simular, cambios]);
+
+  // Número de cada tarjeta con el motor completo (el mismo que daría «Así
+  // quedaría» al elegirla); sin simulador se cae a la vista previa local.
+  const numeroTarjeta = useMemo(() => {
+    const out: Record<string, number> = {};
+    rec.errores.forEach((op) => {
+      const mo = metodoDeOpcion(op, metodosList);
+      const s = mo && simular?.({ ...cambios, metodo: mo.id, valor: null, n: op.n ?? cambios.n });
+      out[op.clave] = s ? s.proy : numeroDeOpcion(op, serieConcepto, b.n);
+    });
+    return out;
+  }, [rec.errores, metodosList, simular, cambios, serieConcepto, b.n]);
   const hayCambio =
     !!sim &&
     [sim.proy - valProyeccion, sim.caus - valCausado, sim.snProy - semiNetoProy, sim.snCaus - semiNetoCaus].some(
@@ -248,8 +260,7 @@ export default function PanelRegla({
                 <TarjetaOpcion
                   key={op.clave}
                   op={op}
-                  serie={serieConcepto}
-                  n={b.n}
+                  numero={numeroTarjeta[op.clave] ?? 0}
                   esRecomendada={op.clave === rec.recomendada}
                   esActual={op.clave === claveActual(regla, metodos)}
                   seleccionada={!!mo && mo.id === b.metodo && (op.n == null || (b.n ?? 9) === op.n)}
@@ -547,8 +558,7 @@ function AsiCelda({ etiqueta, valor, hoy }: { etiqueta: string; valor: number; h
 
 function TarjetaOpcion({
   op,
-  serie,
-  n,
+  numero,
   esRecomendada,
   esActual,
   seleccionada,
@@ -556,8 +566,7 @@ function TarjetaOpcion({
   onElegir,
 }: {
   op: ErrorOpcion;
-  serie: number[];
-  n: number | null;
+  numero: number;
   esRecomendada: boolean;
   esActual: boolean;
   seleccionada: boolean;
@@ -565,7 +574,6 @@ function TarjetaOpcion({
   onElegir: () => void;
 }) {
   const sem = Number.isFinite(op.error) ? op.semaforo : semaforoDeError(1);
-  const numero = numeroDeOpcion(op, serie, n);
   return (
     <button
       type="button"

@@ -34,6 +34,8 @@ interface RowMetodo {
 interface RowRegla {
   periodo: string; empresa: string; concepto: string; grupo_pl: string; combinada: string;
   centro_costo: string; cuenta_contable: string; metodo: string; valor: number | null; activa: boolean;
+  n?: number | null; nombre?: string | null; detalle?: string | null; causado?: Regla['causado'];
+  escenarios?: Regla['escenarios']; nivel?: Regla['nivel']; eliminada?: boolean;
 }
 interface RowHistorico {
   periodo: string; empresa: string; concepto: string; monto_usd: number; es_venta: boolean;
@@ -107,7 +109,8 @@ export async function cargarInsumos(
     .eq('periodo', periodo)
     .eq('activa', true);
   if (eRegla) throw new Error('No se pudieron leer las reglas: ' + eRegla.message);
-  const reglasBase = (rr ?? []) as RowRegla[];
+  // Las borradas (borrado lógico, CP-31) no entran, igual que en la pantalla.
+  const reglasBase = ((rr ?? []) as RowRegla[]).filter((r) => !r.eliminada);
   if (reglasBase.length === 0) {
     throw new Error(`sin reglas activas para ${periodo}: no se publica con datos incompletos.`);
   }
@@ -133,6 +136,17 @@ export async function cargarInsumos(
     }
   }
 
+  // ── Presupuesto del mes por empresa|concepto (método «presupuesto») ──
+  const { data: pp } = await db
+    .from('gyp_historico_cuenta')
+    .select('empresa,concepto,presupuesto')
+    .eq('periodo', periodo);
+  const ppto = new Map<string, number>();
+  for (const f of (pp ?? []) as { empresa: string; concepto: string; presupuesto: number | null }[]) {
+    const key = f.empresa + '|' + f.concepto;
+    ppto.set(key, (ppto.get(key) ?? 0) + (Number(f.presupuesto) || 0));
+  }
+
   // ── Ensamblado de reglas de trabajo (idéntico a `ensamblarReglas`) ──
   const reglas: Regla[] = reglasBase.map((r, i) => {
     const sc = series[r.empresa + '|' + r.concepto] || { a: 0, s: [] };
@@ -143,7 +157,12 @@ export async function cargarInsumos(
       grupo: r.grupo_pl as Regla['grupo'],
       metodo: r.metodo,
       valor: r.valor,
-      n: null,
+      n: r.n ?? null,
+      nombre: r.nombre ?? null,
+      detalle: r.detalle ?? null,
+      causado: r.causado,
+      escenarios: r.escenarios,
+      nivel: r.nivel,
       combinada: r.combinada,
       cc: r.centro_costo,
       cuenta: r.cuenta_contable,
@@ -152,6 +171,7 @@ export async function cargarInsumos(
       serie: (sc.s || []).map((x) => (x == null ? NaN : x)),
       acum: sc.a || 0,
       nueva: false,
+      presupuesto: ppto.get(r.empresa + '|' + r.concepto) ?? null,
     };
   });
 

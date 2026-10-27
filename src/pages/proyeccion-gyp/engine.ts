@@ -500,6 +500,8 @@ export interface CtxPaso {
   refConcepto: (empresa: string, concepto: string) => number;
   /** suma del Cargo Fijo de las demás empresas (para la derivada). */
   cargoFijoDemas: (empresa: string) => number;
+  /** serie histórica de la venta de la empresa (para «según la venta»). */
+  serieVenta?: (empresa: string) => number[];
 }
 
 /** Resuelve el valor de una base plana v1 expresada en una BaseCapas (puente). */
@@ -549,15 +551,12 @@ function evaluarPaso(paso: Paso, acc: number | undefined, valorEfectivo: number 
     case 'valor_fijo':
       return sg * v;
     case 'ratio_venta': {
-      // (Σ concepto ÷ Σ venta de N meses) × venta del mes (§D). La venta de N
-      // meses no está en la serie de esta regla; sin ese dato el ratio es 0.
-      const sumaConcepto = sumaN(r.serie, n);
-      const ventaMes = ctx.venta[r.empresa] || 0;
-      // El numerador sin denominador de venta no es resoluble aquí (necesita la
-      // serie de venta de la empresa, 6.1). Se deja el andamiaje: ratio 0.
-      void sumaConcepto;
-      void ventaMes;
-      return 0;
+      // (Σ concepto ÷ Σ venta de N meses) × venta del mes (§D), igual que el
+      // pronóstico del backtest (wape.ts). La venta del mes ya está calculada:
+      // la fórmula de venta corre en el turno 1 y esta operación en el 3.
+      const sumaVenta = sumaN(ctx.serieVenta?.(r.empresa) ?? [], n);
+      if (sumaVenta === 0) return 0;
+      return sg * (sumaN(r.serie, n) / sumaVenta) * (ctx.venta[r.empresa] || 0);
     }
     case 'derivada':
       return -ctx.cargoFijoDemas(r.empresa);
@@ -723,6 +722,10 @@ export function calcular({
     return cf;
   };
 
+  // Serie de venta de la empresa (la de su regla de Ventas) para «según la venta».
+  const serieVenta = (empresa: string): number[] =>
+    R.find((x) => x.empresa === empresa && x.concepto === 'Ventas')?.serie ?? [];
+
   // CP-49: las reglas que no participan en este escenario quedan en 0 y marcadas
   // `hecho` desde el inicio. Así no entran en ningún turno (su aporte es nulo)
   // pero tampoco cuelgan referencias de otras reglas. En PROYECCION con la
@@ -752,6 +755,7 @@ export function calcular({
         grupo, // idem: base de solo grupo del §C
         refConcepto,
         cargoFijoDemas,
+        serieVenta,
       };
       let res = evaluarMetodoV2(mv2, ctx);
 

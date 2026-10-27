@@ -7,6 +7,7 @@ import {
   type Regla,
 } from '../engine';
 import type { ReglaBase } from '../data';
+import type { FilaHistoricoCuenta } from '../capas';
 import { trazaRegla, type Traza } from './traza';
 import { fmt } from './formato';
 import PanelRegla, { type SimulacionRegla } from './PanelRegla';
@@ -93,6 +94,8 @@ export interface PestanaReglasProps {
   onEliminarRegla: (key: string) => void;
   onRestaurarRegla: (key: string) => void;
   onCrearNuevas: (reglas: NuevaRegla[]) => void;
+  /** Detalle por cuenta del mes, para elegir cuentas en «+ Agregar regla». */
+  detalleCuenta?: FilaHistoricoCuenta[];
   onRestablecer: () => void;
   /** Abre la traza «¿Por qué este número?» (CP-35). */
   onTraza?: (t: Traza) => void;
@@ -124,6 +127,7 @@ export default function PestanaReglas({
   onEliminarRegla,
   onRestaurarRegla,
   onCrearNuevas,
+  detalleCuenta,
   onRestablecer,
   onTraza,
 }: PestanaReglasProps) {
@@ -286,6 +290,7 @@ export default function PestanaReglas({
           metodos={metodos}
           series={series}
           reglasActuales={reglas}
+          detalleCuenta={detalleCuenta}
           onCancelar={() => setAgregar(false)}
           onCrear={(nuevasReglas) => {
             onCrearNuevas(nuevasReglas);

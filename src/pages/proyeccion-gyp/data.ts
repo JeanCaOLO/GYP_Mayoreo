@@ -649,6 +649,27 @@ export async function autorActual(): Promise<string | null> {
 }
 
 /** Resultado de una escritura con bloqueo optimista (CP-38). */
+/**
+ * Texto corto para el usuario a partir del error de Supabase/PostgREST de una
+ * escritura: traduce los códigos de Postgres más comunes y, si no, deja el
+ * mensaje original.
+ */
+export function motivoError(error: unknown): string {
+  const e = (error ?? {}) as { code?: string; message?: string; details?: string };
+  switch (e.code) {
+    case '23505':
+      return 'esa Combinada ya tiene una regla en el mes (también cuentan las eliminadas: restáurala)';
+    case '23503':
+      return 'el método o la fórmula elegida no existe en la base';
+    case '23502':
+      return `falta un dato obligatorio${e.message ? ` (${e.message})` : ''}`;
+    case '42501':
+      return 'sin permiso para escribir en la tabla';
+    default:
+      return e.message || 'error del servidor';
+  }
+}
+
 export interface ResultadoEscritura {
   /** `true` si la fila se actualizó; `false` si alguien se adelantó (0 filas). */
   ok: boolean;
@@ -1041,6 +1062,8 @@ export async function crearRegla(regla: NuevaRegla): Promise<ResultadoCreacion> 
     combinada: regla.combinada,
     centro_costo: regla.centro_costo,
     cuenta_contable: regla.cuenta_contable,
+    // `pais` es NOT NULL en proyeccion_regla: sin él el insert falla.
+    pais: PAIS[regla.empresa] || regla.empresa,
     metodo: regla.metodo,
     valor: regla.valor ?? null,
     nombre: regla.nombre ?? null,

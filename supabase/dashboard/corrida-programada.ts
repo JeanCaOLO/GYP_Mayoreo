@@ -209,10 +209,11 @@ function evaluarPaso(paso, acc, valorEfectivo, ctx) {
 		case "ultimo": return sg * ultimo(r.serie);
 		case "presupuesto": return sg * (r.presupuesto ?? 0);
 		case "valor_fijo": return sg * v;
-		case "ratio_venta":
-			sumaN(r.serie, n);
-			ctx.venta[r.empresa];
-			return 0;
+		case "ratio_venta": {
+			const sumaVenta = sumaN(ctx.serieVenta?.(r.empresa) ?? [], n);
+			if (sumaVenta === 0) return 0;
+			return sg * (sumaN(r.serie, n) / sumaVenta) * (ctx.venta[r.empresa] || 0);
+		}
 		case "derivada": return -ctx.cargoFijoDemas(r.empresa);
 		case "componentes": return acc ?? 0;
 		case "porcentaje":
@@ -308,6 +309,7 @@ function calcular({ reglas: R, metodos: M, params, empresas, gn, escenario = "PR
 		});
 		return cf;
 	};
+	const serieVenta = (empresa) => R.find((x) => x.empresa === empresa && x.concepto === "Ventas")?.serie ?? [];
 	R.forEach((r, i) => {
 		if (!participa(r)) hecho[i] = true;
 	});
@@ -325,7 +327,8 @@ function calcular({ reglas: R, metodos: M, params, empresas, gn, escenario = "PR
 				agg,
 				grupo,
 				refConcepto,
-				cargoFijoDemas
+				cargoFijoDemas,
+				serieVenta
 			});
 			if (escenario === "CAUSADO") {
 				const esVentaODerivada = m.op === "formula_venta" || m.op === "derivada";
@@ -606,7 +609,7 @@ async function cargarInsumos(db, periodo, gn = 9) {
 	else for (const m of Object.values(METODOS_BASE)) metodos[m.id] = { ...m };
 	const { data: rr, error: eRegla } = await db.from("proyeccion_regla").select("*").eq("periodo", periodo).eq("activa", true);
 	if (eRegla) throw new Error("No se pudieron leer las reglas: " + eRegla.message);
-	const reglasBase = rr ?? [];
+	const reglasBase = (rr ?? []).filter((r) => !r.eliminada);
 	if (reglasBase.length === 0) throw new Error(`sin reglas activas para ${periodo}: no se publica con datos incompletos.`);
 	const { data: hr } = await db.from("gyp_historico_mensual").select("periodo,empresa,concepto,monto_usd,es_venta");
 	const series = {};
@@ -626,6 +629,12 @@ async function cargarInsumos(db, periodo, gn = 9) {
 			}
 		}
 	}
+	const { data: pp } = await db.from("gyp_historico_cuenta").select("empresa,concepto,presupuesto").eq("periodo", periodo);
+	const ppto = /* @__PURE__ */ new Map();
+	for (const f of pp ?? []) {
+		const key = f.empresa + "|" + f.concepto;
+		ppto.set(key, (ppto.get(key) ?? 0) + (Number(f.presupuesto) || 0));
+	}
 	return {
 		reglas: reglasBase.map((r, i) => {
 			const sc = series[r.empresa + "|" + r.concepto] || {
@@ -639,7 +648,12 @@ async function cargarInsumos(db, periodo, gn = 9) {
 				grupo: r.grupo_pl,
 				metodo: r.metodo,
 				valor: r.valor,
-				n: null,
+				n: r.n ?? null,
+				nombre: r.nombre ?? null,
+				detalle: r.detalle ?? null,
+				causado: r.causado,
+				escenarios: r.escenarios,
+				nivel: r.nivel,
 				combinada: r.combinada,
 				cc: r.centro_costo,
 				cuenta: r.cuenta_contable,
@@ -647,7 +661,8 @@ async function cargarInsumos(db, periodo, gn = 9) {
 				tasaMensual: null,
 				serie: (sc.s || []).map((x) => x == null ? NaN : x),
 				acum: sc.a || 0,
-				nueva: false
+				nueva: false,
+				presupuesto: ppto.get(r.empresa + "|" + r.concepto) ?? null
 			};
 		}),
 		metodos,

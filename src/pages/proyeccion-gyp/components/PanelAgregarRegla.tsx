@@ -1,20 +1,25 @@
 import { useMemo, useState } from 'react';
 import type { GrupoPL, Metodo, Regla } from '../engine';
+import type { FilaHistoricoCuenta } from '../capas';
 import type { NuevaRegla } from './PestanaReglas';
 
 /**
  * «+ Agregar regla» con tres caminos (CP-30, Requirement 18.4):
  *
- *   1. Agregar una regla — empresa, concepto, cuenta, nombre y detalle. Arranca
- *      en monto fijo 0 y se suma al concepto.
+ *   1. Agregar una regla — empresa, concepto, cuenta, centro, nombre y detalle.
+ *      Arranca en monto fijo 0 y se suma al concepto.
  *   2. Repartir un monto entre cuentas — un monto del mes repartido en partes
  *      iguales, por historia de 6 meses o por presupuesto.
  *   3. Estimar cada cuenta por separado — una regla por cuenta (lo típico de 6
  *      meses, el promedio, igual que el mes pasado o monto fijo; máximo 300).
  *
  * En los caminos 2 y 3 las cuentas se eligen en una lista simple con buscador,
- * no con las capas. Emite las reglas resultantes a `onCrear`, que las añade al
- * estado de la página (nuevas reglas, con borrado lógico al eliminar).
+ * no con las capas, a partir del detalle por cuenta del mes. Emite las reglas
+ * resultantes a `onCrear`, que las añade al estado de la página (nuevas reglas,
+ * con borrado lógico al eliminar).
+ *
+ * La base admite UNA regla por Combinada (periodo, empresa, combinada): una
+ * cuenta que ya tiene regla no se ofrece y el camino 1 pide otra cuenta o centro.
  */
 
 type Camino = 'agregar' | 'repartir' | 'cada_cuenta';
@@ -40,11 +45,22 @@ const METODOS_CUENTA = [
 
 const MAX_REGLAS = 300;
 
+/** Cuenta candidata del detalle del mes. */
+interface CuentaCandidata {
+  combinada: string;
+  cuenta: string;
+  cc: string;
+}
+
+const combinadaDe = (cuenta: string, cc: string, empresa: string) => `${cuenta}-${cc}-${empresa}`;
+
 export interface PanelAgregarReglaProps {
   empresas: readonly string[];
   metodos: Record<string, Metodo>;
   series: Record<string, { a: number; s: (number | null)[] }>;
   reglasActuales: Regla[];
+  /** Detalle por cuenta del mes (gyp_historico_cuenta) para elegir cuentas. */
+  detalleCuenta?: FilaHistoricoCuenta[];
   onCancelar: () => void;
   onCrear: (reglas: NuevaRegla[]) => void;
 }
@@ -54,6 +70,7 @@ export default function PanelAgregarRegla({
   metodos,
   series,
   reglasActuales,
+  detalleCuenta = [],
   onCancelar,
   onCrear,
 }: PanelAgregarReglaProps) {
@@ -71,6 +88,20 @@ export default function PanelAgregarRegla({
       ].sort(),
     [series, empresa],
   );
+
+  // Combinadas que ya tienen regla en la empresa: no admiten otra.
+  const ocupadas = useMemo(
+    () => new Set(reglasActuales.filter((x) => x.empresa === empresa).map((x) => x.combinada)),
+    [reglasActuales, empresa],
+  );
+
+  const cuentasDe = (concepto: string): CuentaCandidata[] => {
+    const vistas = new Map<string, CuentaCandidata>();
+    detalleCuenta
+      .filter((f) => f.empresa === empresa && f.concepto === concepto)
+      .forEach((f) => vistas.set(f.combinada, { combinada: f.combinada, cuenta: f.cuenta, cc: f.centro_costo }));
+    return [...vistas.values()].sort((a, b) => a.combinada.localeCompare(b.combinada));
+  };
 
   const grupoDe = (concepto: string): GrupoPL =>
     (reglasActuales.find((x) => x.concepto === concepto)?.grupo as GrupoPL) || 'GOP';
@@ -133,11 +164,19 @@ export default function PanelAgregarRegla({
       </label>
 
       {camino === 'agregar' && (
-        <CaminoAgregar conceptos={conceptos} onCrear={(c, extra) => onCrear([plantillaDe(c, extra)])} />
+        <CaminoAgregar
+          empresa={empresa}
+          conceptos={conceptos}
+          ocupadas={ocupadas}
+          plantillaDe={plantillaDe}
+          onCrear={(regla) => onCrear([regla])}
+        />
       )}
       {camino === 'repartir' && (
         <CaminoRepartir
           conceptos={conceptos}
+          cuentasDe={cuentasDe}
+          ocupadas={ocupadas}
           metodos={metodos}
           onCrear={(regs) => onCrear(regs)}
           plantillaDe={plantillaDe}
@@ -146,6 +185,8 @@ export default function PanelAgregarRegla({
       {camino === 'cada_cuenta' && (
         <CaminoCadaCuenta
           conceptos={conceptos}
+          cuentasDe={cuentasDe}
+          ocupadas={ocupadas}
           metodos={metodos}
           onCrear={(regs) => onCrear(regs)}
           plantillaDe={plantillaDe}
@@ -160,16 +201,30 @@ export default function PanelAgregarRegla({
 // ─────────────────────────────────────────────────────────────────────────────
 
 function CaminoAgregar({
+  empresa,
   conceptos,
+  ocupadas,
+  plantillaDe,
   onCrear,
 }: {
+  empresa: string;
   conceptos: string[];
-  onCrear: (concepto: string, extra: Partial<NuevaRegla>) => void;
+  ocupadas: Set<string>;
+  plantillaDe: (concepto: string, parcial?: Partial<NuevaRegla>) => NuevaRegla;
+  onCrear: (regla: NuevaRegla) => void;
 }) {
   const [concepto, setConcepto] = useState(conceptos[0] ?? '');
   const [cuenta, setCuenta] = useState('');
+  const [cc, setCc] = useState('');
   const [nombre, setNombre] = useState('');
   const [detalle, setDetalle] = useState('');
+
+  // Cuenta y centro vacíos toman los de la regla del concepto.
+  const base = concepto ? plantillaDe(concepto) : null;
+  const cuentaFinal = cuenta.trim() || base?.cuenta || '';
+  const ccFinal = cc.trim() || base?.cc || '';
+  const combinada = combinadaDe(cuentaFinal, ccFinal, empresa);
+  const repetida = ocupadas.has(combinada);
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -186,12 +241,21 @@ function CaminoAgregar({
         </select>
       </label>
       <label className="flex flex-col gap-1 text-xs text-slate-500">
-        Cuenta (opcional)
+        Cuenta contable
         <input
           value={cuenta}
           onChange={(e) => setCuenta(e.target.value)}
-          placeholder="se usa la del concepto"
-          className="rounded border border-slate-200 px-2 py-1.5 text-sm"
+          placeholder={base?.cuenta ? `${base.cuenta} (la del concepto)` : 'cuenta contable'}
+          className="rounded border border-slate-200 px-2 py-1.5 font-mono text-sm"
+        />
+      </label>
+      <label className="flex flex-col gap-1 text-xs text-slate-500">
+        Centro de costo
+        <input
+          value={cc}
+          onChange={(e) => setCc(e.target.value)}
+          placeholder={base?.cc ? `${base.cc} (el del concepto)` : 'centro de costo'}
+          className="rounded border border-slate-200 px-2 py-1.5 font-mono text-sm"
         />
       </label>
       <label className="flex flex-col gap-1 text-xs text-slate-500">
@@ -210,15 +274,28 @@ function CaminoAgregar({
           className="rounded border border-slate-200 px-2 py-1.5 text-sm"
         />
       </label>
-      <div className="sm:col-span-2">
+      <div className="space-y-2 sm:col-span-2">
+        <p className="text-[11px] text-slate-500">
+          Combinada: <span className="font-mono">{combinada}</span>
+        </p>
+        {repetida && (
+          <p className="rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+            Esa Combinada ya tiene una regla y la base admite una sola por cuenta. Escribe otra
+            cuenta o centro de costo, o abre la regla existente y cambia su forma de estimar.
+          </p>
+        )}
         <button
-          disabled={!concepto}
+          disabled={!concepto || !cuentaFinal || !ccFinal || repetida}
           onClick={() =>
-            onCrear(concepto, {
-              cuenta: cuenta.trim() || undefined,
-              nombre: nombre.trim() || null,
-              detalle: detalle.trim() || null,
-            })
+            onCrear(
+              plantillaDe(concepto, {
+                cuenta: cuentaFinal,
+                cc: ccFinal,
+                combinada,
+                nombre: nombre.trim() || null,
+                detalle: detalle.trim() || null,
+              }),
+            )
           }
           className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
         >
@@ -235,11 +312,15 @@ function CaminoAgregar({
 
 function CaminoRepartir({
   conceptos,
+  cuentasDe,
+  ocupadas,
   metodos,
   onCrear,
   plantillaDe,
 }: {
   conceptos: string[];
+  cuentasDe: (concepto: string) => CuentaCandidata[];
+  ocupadas: Set<string>;
   metodos: Record<string, Metodo>;
   onCrear: (regs: NuevaRegla[]) => void;
   plantillaDe: (concepto: string, parcial?: Partial<NuevaRegla>) => NuevaRegla;
@@ -248,21 +329,23 @@ function CaminoRepartir({
   const [monto, setMonto] = useState('0');
   const [modo, setModo] = useState<(typeof REPARTO_MODOS)[number]['id']>('iguales');
   const [seleccion, setSeleccion] = useState<string[]>([]);
-  const { lista, filtrar, filtro } = useBuscadorCuentas(conceptos);
+  const { lista, filtrar, filtro } = useBuscadorCuentas(cuentasDe(concepto));
 
   const metodoFijo = Object.values(metodos).find((m) => m.op === 'valor_fijo')?.id ?? 'm_valor_fijo';
+  const elegidas = lista.filter((c) => seleccion.includes(c.combinada) && !ocupadas.has(c.combinada));
 
   const crear = () => {
-    const cuentas = seleccion.length ? seleccion : lista.slice(0, 1);
-    if (!cuentas.length) return;
+    if (!elegidas.length) return;
     const total = +monto || 0;
-    const parte = total / cuentas.length; // reparto en partes iguales (histórico/ppto se afinan en el motor)
-    const regs = cuentas.map((c) =>
+    const parte = total / elegidas.length; // reparto en partes iguales (histórico/ppto se afinan en el motor)
+    const regs = elegidas.map((c) =>
       plantillaDe(concepto, {
         metodo: metodoFijo,
         valor: parte,
         nivel: 'cuenta',
-        cuenta: c,
+        cuenta: c.cuenta,
+        cc: c.cc,
+        combinada: c.combinada,
         nombre: `Reparto ${modo} de ${concepto}`,
       }),
     );
@@ -276,7 +359,10 @@ function CaminoRepartir({
           Concepto a repartir
           <select
             value={concepto}
-            onChange={(e) => setConcepto(e.target.value)}
+            onChange={(e) => {
+              setConcepto(e.target.value);
+              setSeleccion([]);
+            }}
             className="rounded border border-slate-200 px-2 py-1.5 text-sm"
           >
             {conceptos.map((c) => (
@@ -312,14 +398,16 @@ function CaminoRepartir({
         lista={lista}
         filtro={filtro}
         onFiltrar={filtrar}
+        ocupadas={ocupadas}
         seleccion={seleccion}
         onSeleccion={setSeleccion}
       />
       <button
         onClick={crear}
-        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700"
+        disabled={!elegidas.length}
+        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
       >
-        Repartir entre {seleccion.length || 1} cuenta(s)
+        Repartir entre {elegidas.length} cuenta(s)
       </button>
     </div>
   );
@@ -331,11 +419,15 @@ function CaminoRepartir({
 
 function CaminoCadaCuenta({
   conceptos,
+  cuentasDe,
+  ocupadas,
   metodos,
   onCrear,
   plantillaDe,
 }: {
   conceptos: string[];
+  cuentasDe: (concepto: string) => CuentaCandidata[];
+  ocupadas: Set<string>;
   metodos: Record<string, Metodo>;
   onCrear: (regs: NuevaRegla[]) => void;
   plantillaDe: (concepto: string, parcial?: Partial<NuevaRegla>) => NuevaRegla;
@@ -343,14 +435,15 @@ function CaminoCadaCuenta({
   const [concepto, setConcepto] = useState(conceptos[0] ?? '');
   const [op, setOp] = useState<(typeof METODOS_CUENTA)[number]['op']>('mediana');
   const [seleccion, setSeleccion] = useState<string[]>([]);
-  const { lista, filtrar, filtro } = useBuscadorCuentas(conceptos);
+  const { lista, filtrar, filtro } = useBuscadorCuentas(cuentasDe(concepto));
 
   const metodoId =
     Object.values(metodos).find((m) => m.op === op)?.id ?? `m_${op}`;
-  const excede = seleccion.length > MAX_REGLAS;
+  const elegidas = lista.filter((c) => seleccion.includes(c.combinada) && !ocupadas.has(c.combinada));
+  const excede = elegidas.length > MAX_REGLAS;
 
   const crear = () => {
-    const cuentas = (seleccion.length ? seleccion : lista.slice(0, 1)).slice(0, MAX_REGLAS);
+    const cuentas = elegidas.slice(0, MAX_REGLAS);
     if (!cuentas.length) return;
     const regs = cuentas.map((c) =>
       plantillaDe(concepto, {
@@ -358,7 +451,9 @@ function CaminoCadaCuenta({
         valor: op === 'valor_fijo' ? 0 : null,
         n: op === 'mediana' ? 6 : null,
         nivel: 'cuenta',
-        cuenta: c,
+        cuenta: c.cuenta,
+        cc: c.cc,
+        combinada: c.combinada,
       }),
     );
     onCrear(regs);
@@ -371,7 +466,10 @@ function CaminoCadaCuenta({
           Concepto
           <select
             value={concepto}
-            onChange={(e) => setConcepto(e.target.value)}
+            onChange={(e) => {
+              setConcepto(e.target.value);
+              setSeleccion([]);
+            }}
             className="rounded border border-slate-200 px-2 py-1.5 text-sm"
           >
             {conceptos.map((c) => (
@@ -398,6 +496,7 @@ function CaminoCadaCuenta({
         lista={lista}
         filtro={filtro}
         onFiltrar={filtrar}
+        ocupadas={ocupadas}
         seleccion={seleccion}
         onSeleccion={setSeleccion}
       />
@@ -408,9 +507,10 @@ function CaminoCadaCuenta({
       )}
       <button
         onClick={crear}
-        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700"
+        disabled={!elegidas.length}
+        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
       >
-        Crear {Math.min(seleccion.length || 1, MAX_REGLAS)} regla(s) por cuenta
+        Crear {Math.min(elegidas.length, MAX_REGLAS)} regla(s) por cuenta
       </button>
     </div>
   );
@@ -420,14 +520,11 @@ function CaminoCadaCuenta({
 // Lista simple de cuentas con buscador (CP-30: sin capas)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Deriva una lista de cuentas candidatas a partir de los conceptos disponibles. */
-function useBuscadorCuentas(conceptos: string[]) {
+/** Filtra las cuentas del concepto por el texto del buscador. */
+function useBuscadorCuentas(cuentas: CuentaCandidata[]) {
   const [filtro, setFiltro] = useState('');
-  const lista = useMemo(
-    () =>
-      conceptos.filter((c) => c.toLowerCase().includes(filtro.toLowerCase())),
-    [conceptos, filtro],
-  );
+  const f = filtro.toLowerCase();
+  const lista = cuentas.filter((c) => c.combinada.toLowerCase().includes(f));
   return { lista, filtrar: setFiltro, filtro };
 }
 
@@ -435,12 +532,14 @@ function ListaCuentas({
   lista,
   filtro,
   onFiltrar,
+  ocupadas,
   seleccion,
   onSeleccion,
 }: {
-  lista: string[];
+  lista: CuentaCandidata[];
   filtro: string;
   onFiltrar: (v: string) => void;
+  ocupadas: Set<string>;
   seleccion: string[];
   onSeleccion: (v: string[]) => void;
 }) {
@@ -456,17 +555,30 @@ function ListaCuentas({
       />
       <div className="max-h-40 overflow-auto p-1">
         {lista.length === 0 && (
-          <p className="px-2 py-1 text-xs text-slate-400">Sin cuentas que coincidan.</p>
+          <p className="px-2 py-1 text-xs text-slate-400">
+            Sin cuentas que coincidan (hace falta el detalle por cuenta del mes).
+          </p>
         )}
-        {lista.map((c) => (
-          <label
-            key={c}
-            className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-slate-50"
-          >
-            <input type="checkbox" checked={seleccion.includes(c)} onChange={() => toggle(c)} />
-            {c}
-          </label>
-        ))}
+        {lista.map((c) => {
+          const ocupada = ocupadas.has(c.combinada);
+          return (
+            <label
+              key={c.combinada}
+              className={`flex items-center gap-2 rounded px-2 py-1 font-mono text-xs ${
+                ocupada ? 'text-slate-400' : 'cursor-pointer hover:bg-slate-50'
+              }`}
+            >
+              <input
+                type="checkbox"
+                disabled={ocupada}
+                checked={!ocupada && seleccion.includes(c.combinada)}
+                onChange={() => toggle(c.combinada)}
+              />
+              {c.combinada}
+              {ocupada && <span className="font-sans text-[10px]">· ya tiene regla</span>}
+            </label>
+          );
+        })}
       </div>
     </div>
   );
