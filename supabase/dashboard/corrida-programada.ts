@@ -668,7 +668,7 @@ async function abrirCorrida(db, periodo, paso, estado, extra = {}) {
 		filas: extra.filas ?? null,
 		corte: extra.corte ?? null,
 		mensaje: extra.mensaje ?? null,
-		lanzada_por: "pg_cron",
+		lanzada_por: LANZADA_POR,
 		fin: estado === "en_curso" ? null : (/* @__PURE__ */ new Date()).toISOString()
 	}).select("id").single();
 	if (error) {
@@ -702,6 +702,109 @@ function periodoVigente(zona) {
 		year: "numeric",
 		month: "2-digit"
 	}).format(/* @__PURE__ */ new Date()).slice(0, 7);
+}
+/** Quién lanzó la corrida, para la bitácora. Se fija por petición en el handler. */
+let LANZADA_POR = "pg_cron";
+/** Una corrida `en_curso` más vieja que esto se da por caída y no bloquea. */
+const CORRIDA_COLGADA_MS = 1800 * 1e3;
+/** Fecha y hora "de pared" de un instante en la zona dada. */
+function partesEnZona(instante, zona) {
+	const f = new Intl.DateTimeFormat("en-CA", {
+		timeZone: zona,
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+		hourCycle: "h23"
+	});
+	const p = Object.fromEntries(f.formatToParts(instante).map((x) => [x.type, x.value]));
+	return {
+		fecha: `${p.year}-${p.month}-${p.day}`,
+		anio: +p.year,
+		mes: +p.month,
+		dia: +p.day,
+		hora: +p.hour,
+		minuto: +p.minute,
+		segundo: +p.second
+	};
+}
+/**
+* Instante UTC que corresponde a `fecha` + `hora` (HH:MM) de pared en `zona`.
+* Se calcula el desfase de la zona con Intl en vez de escribir −4 a mano (R-27.2).
+*/
+function instanteDeLocal(fecha, hora, zona) {
+	const [a, m, d] = fecha.split("-").map(Number);
+	const [hh, mm] = hora.split(":").map(Number);
+	const supuesto = Date.UTC(a, m - 1, d, hh, mm, 0);
+	const p = partesEnZona(new Date(supuesto), zona);
+	const comoUtc = Date.UTC(p.anio, p.mes - 1, p.dia, p.hora, p.minuto, p.segundo);
+	return new Date(supuesto - (comoUtc - supuesto));
+}
+/** Día ISO (1 = lunes … 7 = domingo) de una fecha 'aaaa-mm-dd'. */
+function diaIso(fecha) {
+	const [a, m, d] = fecha.split("-").map(Number);
+	return (new Date(Date.UTC(a, m - 1, d)).getUTCDay() + 6) % 7 + 1;
+}
+/**
+* Decide si la corrida programada toca ahora: hoy (en la zona) es un día de la
+* frecuencia, ya pasó `hora_local` y no hubo corrida programada desde entonces.
+* Devuelve el instante programado de hoy para la bitácora.
+*/
+async function tocaAhora(db, prog, zona) {
+	const ahora = /* @__PURE__ */ new Date();
+	const hoy = partesEnZona(ahora, zona).fecha;
+	const iso = diaIso(hoy);
+	if (!(prog.frecuencia === "habiles" ? iso >= 1 && iso <= 5 : prog.frecuencia === "semanal" ? iso === (prog.dia_semana ?? 1) : true)) return {
+		toca: false,
+		motivo: `hoy (${hoy}) no toca según la frecuencia ${prog.frecuencia}.`
+	};
+	const programada = instanteDeLocal(hoy, prog.hora_local.slice(0, 5), zona);
+	if (ahora < programada) return {
+		toca: false,
+		motivo: `aún no son las ${prog.hora_local.slice(0, 5)} en ${zona}.`
+	};
+	const { data, error } = await db.from("proyeccion_corrida").select("id").eq("origen", "programada").gte("inicio", programada.toISOString()).limit(1);
+	if (error) throw new Error(`No se pudo leer la bitácora: ${error.message}`);
+	if (data && data.length > 0) return {
+		toca: false,
+		motivo: `ya corrió hoy después de las ${prog.hora_local.slice(0, 5)}.`
+	};
+	return {
+		toca: true,
+		motivo: `programada ${hoy} ${prog.hora_local.slice(0, 5)} (${zona}).`
+	};
+}
+/**
+* Llama a la Edge Function que consulta Fabric y escribe histórico y parámetros
+* en Supabase. `escrito` = hubo datos nuevos; `sinCambios` = una guarda frenó la
+* escritura (409, p. ej. el corte no avanzó): no es un fallo.
+*/
+async function extraerDeFabric(supabaseUrl, serviceKey, periodo) {
+	const resp = await fetch(`${supabaseUrl}/functions/v1/refrescar-proyeccion-fabric`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			Authorization: `Bearer ${serviceKey}`,
+			apikey: serviceKey
+		},
+		body: JSON.stringify({ periodo })
+	});
+	const cuerpo = await resp.json().catch(() => null);
+	if (resp.ok && cuerpo?.escrito) return {
+		escrito: true,
+		sinCambios: false,
+		corte: cuerpo.corte ?? null,
+		mensaje: `Fabric extraído: ${cuerpo.conceptos ?? "—"} conceptos, corte ${cuerpo.corte ?? "—"}.`
+	};
+	if (resp.status === 409) return {
+		escrito: false,
+		sinCambios: true,
+		corte: null,
+		mensaje: `Fabric sin datos nuevos: ${cuerpo?.errores && cuerpo.errores[0] || "guardas no superadas"}`
+	};
+	throw new Error((cuerpo && (cuerpo.error || cuerpo.mensaje)) ?? `refrescar-proyeccion-fabric respondió ${resp.status}`);
 }
 /**
 * Determina si los datos del mes están "frescos" para publicar. Lee el `corte`
@@ -867,7 +970,9 @@ serve(async (req) => {
 		if (eProg) throw new Error(`No se pudo leer proyeccion_programacion: ${eProg.message}`);
 		const prog = progRow;
 		const zona = prog.zona || "America/Caracas";
-		if (!prog.activa) {
+		const manual = body.manual === true;
+		LANZADA_POR = manual ? "manual" : "pg_cron";
+		if (!prog.activa && !manual) {
 			log.push("programación pausada (activa=false): no se ejecuta.");
 			return json({
 				ok: true,
@@ -876,8 +981,24 @@ serve(async (req) => {
 				log
 			});
 		}
+		if (!manual) {
+			const t = await tocaAhora(db, prog, zona);
+			log.push(t.motivo);
+			if (!t.toca) return json({
+				ok: true,
+				ejecutada: false,
+				motivo: "fuera_de_horario",
+				log
+			});
+		}
 		const periodo = typeof body.periodo === "string" && body.periodo || prog.periodo || periodoVigente(zona);
 		log.push(`periodo de trabajo: ${periodo} (zona ${zona})`);
+		const limiteColgada = (/* @__PURE__ */ new Date(Date.now() - CORRIDA_COLGADA_MS)).toISOString();
+		await db.from("proyeccion_corrida").update({
+			estado: "error",
+			fin: (/* @__PURE__ */ new Date()).toISOString(),
+			mensaje: "quedó en curso más de 30 min; se da por caída."
+		}).eq("periodo", periodo).eq("estado", "en_curso").lt("inicio", limiteColgada);
 		const { data: enCurso, error: eCurso } = await db.from("proyeccion_corrida").select("id, paso, inicio").eq("periodo", periodo).eq("estado", "en_curso").limit(1);
 		if (eCurso) throw new Error(`No se pudo comprobar solapamiento: ${eCurso.message}`);
 		if (enCurso && enCurso.length > 0) {
@@ -891,6 +1012,21 @@ serve(async (req) => {
 				periodo,
 				log
 			});
+		}
+		if (body.sinExtraccion !== true) {
+			const idExt = await abrirCorrida(db, periodo, "extraccion", "en_curso");
+			try {
+				const ext = await extraerDeFabric(supabaseUrl, serviceKey, periodo);
+				log.push(ext.mensaje);
+				await cerrarCorrida(db, idExt, ext.escrito ? "ok" : "omitida", {
+					mensaje: ext.mensaje,
+					corte: ext.corte
+				});
+			} catch (errExt) {
+				const msg = "extracción de Fabric falló: " + String(errExt instanceof Error ? errExt.message : errExt) + ". Se recalcula con los últimos datos de Supabase.";
+				log.push(msg);
+				await cerrarCorrida(db, idExt, "error", { mensaje: msg });
+			}
 		}
 		const forzar = body.forzar === true;
 		let corteExtraccion = null;

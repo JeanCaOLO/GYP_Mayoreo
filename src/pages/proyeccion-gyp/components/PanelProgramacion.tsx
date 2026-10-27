@@ -1,10 +1,12 @@
-import { useMemo } from 'react';
-import type {
-  Programacion,
-  CambiosProgramacion,
-  FrecuenciaProgramacion,
-  Corrida,
-  Fuente,
+import { useMemo, useState } from 'react';
+import { useToast } from '@/contexts/ToastContext';
+import {
+  ejecutarCorridaAhora,
+  type Programacion,
+  type CambiosProgramacion,
+  type FrecuenciaProgramacion,
+  type Corrida,
+  type Fuente,
 } from '../data';
 import { nombreMes } from './PestanaParametros';
 
@@ -186,6 +188,29 @@ export default function PanelProgramacion({
 }: PanelProgramacionProps) {
   const p = programacion;
   const proxima = useMemo(() => proximaPublicacionEnClaro(p), [p]);
+  const { addToast } = useToast();
+  const [ejecutando, setEjecutando] = useState(false);
+  const [bitacora, setBitacora] = useState<string[] | null>(null);
+
+  // Corre la cadena completa ya: Fabric → recálculo → v_proyeccion_final.
+  const ejecutarAhora = async () => {
+    if (!window.confirm('¿Consultar Fabric, recalcular y publicar proyectado y causado ahora?')) return;
+    setEjecutando(true);
+    setBitacora(null);
+    try {
+      const r = await ejecutarCorridaAhora(p.periodo ?? periodo);
+      setBitacora(r.log ?? (r.error ? [r.error] : []));
+      if (r.ok && r.ejecutada) {
+        addToast('success', `Actualización publicada: ${JSON.stringify(r.publicado ?? {})} filas por escenario.`);
+      } else {
+        addToast('error', `La actualización no publicó (${r.motivo ?? r.error ?? 'error'}). Revisa la bitácora.`);
+      }
+    } catch (err) {
+      addToast('error', 'No se pudo ejecutar: ' + (err as Error).message);
+    } finally {
+      setEjecutando(false);
+    }
+  };
   const mesFijo = p.periodo != null;
 
   return (
@@ -193,10 +218,10 @@ export default function PanelProgramacion({
       <div>
         <h2 className="text-base font-semibold text-slate-900">Cuándo se actualiza solo</h2>
         <p className="text-sm text-slate-500">
-          El aplicativo recalcula y publica los dos escenarios a la{' '}
-          <b>hora de publicación, en hora de Caracas</b>. Fabric trae los datos por su cuenta; aquí
-          se decide <b>cuándo se publican</b>. Pon la hora con margen por detrás de la extracción de
-          Fabric y deja activo «no publicar con datos viejos».
+          A la <b>hora de publicación, en hora de Caracas</b>, el servidor consulta Fabric, escribe
+          los datos en Supabase, recalcula las reglas de los dos escenarios y publica proyectado y
+          causado en <span className="font-mono">v_proyeccion_final</span>. Revisa cada 5 minutos si
+          ya toca, así que publica a lo sumo 5 minutos después de la hora elegida.
         </p>
       </div>
 
@@ -384,6 +409,21 @@ export default function PanelProgramacion({
               </span>
             )}
           </p>
+          <button
+            type="button"
+            onClick={ejecutarAhora}
+            disabled={ejecutando}
+            className="mt-3 rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+          >
+            {ejecutando ? 'Ejecutando… (puede tardar unos minutos)' : 'Ejecutar ahora'}
+          </button>
+          {bitacora && bitacora.length > 0 && (
+            <ul className="mt-2 space-y-0.5 rounded bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-600">
+              {bitacora.map((l, i) => (
+                <li key={i}>· {l}</li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>

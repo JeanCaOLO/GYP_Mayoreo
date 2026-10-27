@@ -350,11 +350,20 @@ export default function ProyeccionGypPage() {
     }
   };
 
-  const persistirRegla = (id: number, rev: number, cambios: CambiosRegla, que: string) =>
-    actualizarRegla(id, rev, cambios).then((r) => {
-      avisarEscritura(r, que);
-      if (r.ok) fijarRev(id, r.rev);
-    });
+  // `proyeccion_regla.metodo` referencia `proyeccion_metodo`: un método que aún
+  // no está en la base (de la semilla o creado en pantalla) se sube antes.
+  const asegurarMetodo = async (id: string | undefined) => {
+    if (!id || (data.metodosEnBase ?? []).includes(id) || !metodos[id]) return;
+    const r = await guardarMetodo(metodos[id]);
+    if (r.ok) setData((d) => ({ ...d, metodosEnBase: [...(d.metodosEnBase ?? []), id] }));
+  };
+
+  const persistirRegla = async (id: number, rev: number, cambios: CambiosRegla, que: string) => {
+    await asegurarMetodo(cambios.metodo);
+    const r = await actualizarRegla(id, rev, cambios);
+    avisarEscritura(r, que);
+    if (r.ok) fijarRev(id, r.rev);
+  };
 
   /** Valores efectivos (base + override) de una regla, listos para la base. */
   const efectivos = (b: ReglaBase, o: Override): CambiosRegla => ({
@@ -440,8 +449,9 @@ export default function ProyeccionGypPage() {
   const crearNuevas = (nuevasReglas: NuevaRegla[]) => {
     setNuevas((prev) => [...prev, ...nuevasReglas]);
     if (data.fuente !== 'db') return;
-    nuevasReglas.forEach((x) =>
-      crearRegla({
+    nuevasReglas.forEach(async (x) => {
+      await asegurarMetodo(x.metodo);
+      return crearRegla({
         periodo: data.periodo,
         empresa: x.empresa,
         concepto: x.concepto,
@@ -463,22 +473,28 @@ export default function ProyeccionGypPage() {
         } else {
           addToast('error', `No se pudo guardar en la base la regla nueva ${x.empresa} · ${x.concepto}.`);
         }
-      }),
-    );
+      });
+    });
   };
 
   // Editar un método del sistema desde «Mis fórmulas»: se aplica de inmediato al
   // cálculo (vía `metodosUser`) y se persiste en `proyeccion_metodo`.
   const editarMetodo = (m: Metodo) => {
     setMetodosUser((prev) => ({ ...prev, [m.id]: m }));
-    guardarMetodo(m).then((r) =>
+    guardarMetodo(m).then((r) => {
+      if (r.ok)
+        setData((d) =>
+          (d.metodosEnBase ?? []).includes(m.id)
+            ? d
+            : { ...d, metodosEnBase: [...(d.metodosEnBase ?? []), m.id] },
+        );
       addToast(
         r.ok ? 'success' : 'error',
         r.ok
-          ? `Método «${m.nombre}» actualizado.`
+          ? `Método «${m.nombre}» guardado.`
           : `Método «${m.nombre}» aplicado en pantalla, pero no se pudo guardar en la base.`,
-      ),
-    );
+      );
+    });
   };
 
   // ── Mes de trabajo (CP-33) ──
@@ -732,6 +748,7 @@ export default function ProyeccionGypPage() {
           semiNeto={semiNeto}
           eliminadas={eliminadas}
           onModRegla={guardarRegla}
+          onCrearMetodo={editarMetodo}
           onEliminarRegla={eliminarRegla}
           onRestaurarRegla={restaurarRegla}
           onCrearNuevas={crearNuevas}

@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
 import {
   formula,
+  type Base,
   type Causado,
   type EscenarioRegla,
   type Metodo,
+  type Operacion,
   type Regla,
 } from '../engine';
 import { recomendar, semaforoDeError, type ErrorOpcion, type Semaforo } from '../wape';
@@ -83,6 +85,8 @@ export interface PanelReglaProps {
   serieConcepto: number[];
   /** Serie histórica mensual de la venta de la empresa (para «según la venta»). */
   serieVenta?: number[];
+  /** Crea un método nuevo («+ Crear otra forma») y lo deja disponible para todas. */
+  onCrearMetodo?: (m: Metodo) => void;
   onGuardar: (cambios: Partial<Override>) => void;
   onCancelar: () => void;
   onOtraRegla: () => void;
@@ -94,6 +98,8 @@ export interface PanelReglaProps {
 const OP_PIDE_VALOR = ['porcentaje', 'multiplicar', 'sumar', 'restar', 'valor_fijo'];
 /** Operaciones que miran una ventana de meses. */
 const OP_PIDE_N = ['promedio', 'mediana', 'ratio_venta'];
+/** Operaciones que ya aparecen como tarjeta de historia con su error WAPE. */
+const OPS_CON_TARJETA = ['promedio', 'mediana', 'ultimo', 'ratio_venta'];
 
 export default function PanelRegla({
   regla,
@@ -104,6 +110,7 @@ export default function PanelRegla({
   metodos,
   serieConcepto,
   serieVenta,
+  onCrearMetodo,
   onGuardar,
   onCancelar,
   onOtraRegla,
@@ -122,6 +129,7 @@ export default function PanelRegla({
     cc: regla.cc,
   });
   const [avanzado, setAvanzado] = useState(false);
+  const [creando, setCreando] = useState(false);
 
   const set = <K extends keyof Borrador>(k: K, v: Borrador[K]) => setB((p) => ({ ...p, [k]: v }));
 
@@ -135,6 +143,13 @@ export default function PanelRegla({
     () => recomendar(serieConcepto, regla.concepto, claveActual(regla, metodos), wrapVenta(serieVenta)),
     [serieConcepto, regla, metodos, serieVenta],
   );
+
+  // Las tarjetas de historia ya cubren los métodos de fábrica de esas
+  // operaciones; «Otras formas» lista el resto (sin historia: todos).
+  const otrasFormas = useMemo(() => {
+    if (rec.errores.length === 0) return metodosList;
+    return metodosList.filter((mm) => !mm.fijo || !OPS_CON_TARJETA.includes(mm.op));
+  }, [metodosList, rec.errores.length]);
 
   const guardar = () => {
     const cuenta = b.cuenta.trim();
@@ -187,35 +202,101 @@ export default function PanelRegla({
         </label>
       </div>
 
-      {/* 2 · ¿Cómo quieres estimar el mes? — tarjetas con número y error (CP-25) */}
+      {/* 2 · ¿Cómo quieres estimar el mes? — tarjetas con número y error (CP-25).
+          Pulsar una tarjeta la deja SELECCIONADA para esta regla; se aplica al
+          Guardar. «+ Crear otra forma» arma un método nuevo y lo selecciona. */}
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
           ¿Cómo quieres estimar el mes?
         </p>
         {rec.excepcion ? (
-          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          <div className="mb-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
             Este concepto tiene método fijado por el negocio: <b>{rec.excepcion}</b>. No se prueban
             opciones de historia.
           </div>
         ) : rec.errores.length === 0 ? (
-          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+          <div className="mb-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
             Sin historia suficiente para probar opciones (hacen falta meses cerrados).
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-            {rec.errores.map((op) => (
-              <TarjetaOpcion
-                key={op.clave}
-                op={op}
-                serie={serieConcepto}
-                n={b.n}
-                esRecomendada={op.clave === rec.recomendada}
-                esActual={op.clave === claveActual(regla, metodos)}
-                onElegir={() => elegirOpcion(op, metodosList, set)}
-              />
-            ))}
+          <div className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+            {rec.errores.map((op) => {
+              const mo = metodoDeOpcion(op, metodosList);
+              return (
+                <TarjetaOpcion
+                  key={op.clave}
+                  op={op}
+                  serie={serieConcepto}
+                  n={b.n}
+                  esRecomendada={op.clave === rec.recomendada}
+                  esActual={op.clave === claveActual(regla, metodos)}
+                  seleccionada={!!mo && mo.id === b.metodo && (op.n == null || (b.n ?? 9) === op.n)}
+                  disponible={!!mo}
+                  onElegir={() => {
+                    if (!mo) return;
+                    set('metodo', mo.id);
+                    set('valor', null);
+                    if (op.n) set('n', op.n);
+                  }}
+                />
+              );
+            })}
           </div>
         )}
+
+        {/* Otras formas: el resto de métodos (de fábrica y propios). */}
+        <p className="mb-1 mt-3 text-[11px] font-semibold text-slate-500">Otras formas</p>
+        <div className="flex flex-wrap gap-2">
+          {otrasFormas.map((mm) => {
+            const sel = mm.id === b.metodo;
+            return (
+              <button
+                key={mm.id}
+                type="button"
+                onClick={() => {
+                  set('metodo', mm.id);
+                  set('valor', null);
+                }}
+                title={formula(mm)}
+                className={`rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
+                  sel
+                    ? 'border-emerald-600 bg-emerald-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
+                }`}
+              >
+                <span className="font-semibold">{mm.nombre}</span>
+                {!mm.fijo && (
+                  <span className={`ml-1 text-[10px] ${sel ? 'text-emerald-100' : 'text-emerald-700'}`}>
+                    propia
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          {onCrearMetodo && (
+            <button
+              type="button"
+              onClick={() => setCreando((v) => !v)}
+              className="rounded-lg border border-dashed border-emerald-400 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+            >
+              + Crear otra forma
+            </button>
+          )}
+        </div>
+
+        {creando && onCrearMetodo && (
+          <CrearForma
+            empresa={regla.empresa}
+            onCancelar={() => setCreando(false)}
+            onCrear={(nuevo) => {
+              onCrearMetodo(nuevo);
+              set('metodo', nuevo.id);
+              set('valor', null);
+              setCreando(false);
+            }}
+          />
+        )}
+
         {rec.revisarAMano && (
           <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
             La mejor opción se equivoca más de ±50 %. Conviene revisar este concepto a mano cada
@@ -225,6 +306,11 @@ export default function PanelRegla({
         {rec.quedarse && (
           <p className="mt-2 text-[11px] text-emerald-700">
             La opción actual acierta casi igual que la mejor: puedes quedarte como estás.
+          </p>
+        )}
+        {b.metodo !== regla.metodo && (
+          <p className="mt-2 text-[11px] text-slate-500">
+            Seleccionada: <b>{m?.nombre ?? b.metodo}</b>. Se aplica a esta regla al pulsar Guardar.
           </p>
         )}
       </div>
@@ -431,6 +517,8 @@ function TarjetaOpcion({
   n,
   esRecomendada,
   esActual,
+  seleccionada,
+  disponible,
   onElegir,
 }: {
   op: ErrorOpcion;
@@ -438,6 +526,8 @@ function TarjetaOpcion({
   n: number | null;
   esRecomendada: boolean;
   esActual: boolean;
+  seleccionada: boolean;
+  disponible: boolean;
   onElegir: () => void;
 }) {
   const sem = Number.isFinite(op.error) ? op.semaforo : semaforoDeError(1);
@@ -446,7 +536,11 @@ function TarjetaOpcion({
     <button
       type="button"
       onClick={onElegir}
-      className={`flex flex-col gap-1 rounded-lg border px-2.5 py-2 text-left transition-colors ${COLOR_SEMAFORO[sem]} hover:ring-2 hover:ring-emerald-200`}
+      disabled={!disponible}
+      title={disponible ? 'Usar esta forma para la regla' : 'No hay un método para esta opción'}
+      className={`flex flex-col gap-1 rounded-lg border px-2.5 py-2 text-left transition-colors disabled:opacity-50 ${COLOR_SEMAFORO[sem]} ${
+        seleccionada ? 'ring-2 ring-emerald-600' : 'hover:ring-2 hover:ring-emerald-200'
+      }`}
     >
       <span className="flex items-center justify-between gap-1">
         <span className="text-[11px] font-semibold">{op.etiqueta}</span>
@@ -465,6 +559,11 @@ function TarjetaOpcion({
         {esActual && (
           <span className="rounded bg-slate-700 px-1 text-[9px] font-semibold text-white">
             actual
+          </span>
+        )}
+        {seleccionada && (
+          <span className="rounded bg-emerald-700 px-1 text-[9px] font-semibold text-white">
+            ✓ seleccionada
           </span>
         )}
       </span>
@@ -525,31 +624,160 @@ function numeroDeOpcion(op: ErrorOpcion, serie: number[], n: number | null): num
   }
 }
 
-/** Traduce la opción WAPE elegida al método/n del borrador. */
-function elegirOpcion(
-  op: ErrorOpcion,
-  metodosList: Metodo[],
-  set: <K extends keyof Borrador>(k: K, v: Borrador[K]) => void,
-) {
-  const porOp = (o: string) => metodosList.find((m) => m.op === o);
-  let metodo: Metodo | undefined;
-  switch (op.tipo) {
-    case 'tipico':
-      metodo = porOp('mediana');
-      break;
-    case 'promedio':
-      metodo = porOp('promedio');
-      break;
-    case 'ultimo':
-      metodo = porOp('ultimo');
-      break;
-    case 'ratio_venta':
-      metodo = porOp('ratio_venta');
-      break;
-  }
-  if (metodo) {
-    set('metodo', metodo.id);
-    set('valor', null);
-    if (op.n) set('n', op.n);
-  }
+/** Método que corresponde a una opción WAPE (por su operación). */
+function metodoDeOpcion(op: ErrorOpcion, metodosList: Metodo[]): Metodo | undefined {
+  const opDeTipo: Record<string, string> = {
+    tipico: 'mediana',
+    promedio: 'promedio',
+    ultimo: 'ultimo',
+    ratio_venta: 'ratio_venta',
+  };
+  const buscada = opDeTipo[op.tipo];
+  if (!buscada) return undefined;
+  // Se prefiere el de fábrica; si no hay, cualquiera con esa operación.
+  return (
+    metodosList.find((mm) => mm.op === buscada && mm.fijo) ??
+    metodosList.find((mm) => mm.op === buscada)
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// «+ Crear otra forma» — arma un método nuevo (modelo v1: op/base/valor)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface TipoForma {
+  id: string;
+  label: string;
+  op: Operacion;
+  base: (concepto: string) => Base;
+  orden: number;
+  invertir: boolean;
+  /** Pide valor: 'pct' (porcentaje) o 'monto'. */
+  valor?: 'pct' | 'monto';
+  /** Pide el concepto de la misma empresa sobre el que se calcula. */
+  pideConcepto?: boolean;
+}
+
+/** Turnos como en los métodos de fábrica (§D): historia 2, sobre venta 3, Semi Neto 5. */
+const TIPOS_FORMA: TipoForma[] = [
+  { id: 'promedio', label: 'Promedio de los últimos meses', op: 'promedio', base: () => 'ninguna', orden: 2, invertir: false },
+  { id: 'mediana', label: 'Lo típico (mediana)', op: 'mediana', base: () => 'ninguna', orden: 2, invertir: false },
+  { id: 'ultimo', label: 'El último mes cerrado', op: 'ultimo', base: () => 'ninguna', orden: 2, invertir: false },
+  { id: 'presupuesto', label: 'El presupuesto del mes', op: 'presupuesto', base: () => 'ninguna', orden: 2, invertir: false },
+  { id: 'fijo', label: 'Un monto fijo', op: 'valor_fijo', base: () => 'ninguna', orden: 2, invertir: false, valor: 'monto' },
+  { id: 'pct_venta', label: 'Un % de la venta', op: 'porcentaje', base: () => 'venta', orden: 3, invertir: true, valor: 'pct' },
+  { id: 'pct_concepto', label: 'Un % de otro concepto', op: 'porcentaje', base: (c) => `c:${c}`, orden: 4, invertir: false, valor: 'pct', pideConcepto: true },
+  { id: 'pct_semineto', label: 'Un % del Semi Neto', op: 'porcentaje', base: () => 'semineto', orden: 5, invertir: false, valor: 'pct' },
+];
+
+function CrearForma({
+  empresa,
+  onCrear,
+  onCancelar,
+}: {
+  empresa: string;
+  onCrear: (m: Metodo) => void;
+  onCancelar: () => void;
+}) {
+  const [nombre, setNombre] = useState('');
+  const [tipoId, setTipoId] = useState(TIPOS_FORMA[0].id);
+  const [valor, setValor] = useState(0);
+  const [concepto, setConcepto] = useState('');
+  const tipo = TIPOS_FORMA.find((t) => t.id === tipoId)!;
+  const [invertir, setInvertir] = useState(tipo.invertir);
+
+  const valido = nombre.trim() !== '' && (!tipo.pideConcepto || concepto.trim() !== '');
+
+  const crear = () => {
+    if (!valido) return;
+    onCrear({
+      id: `u_${Date.now().toString(36)}`,
+      nombre: nombre.trim(),
+      op: tipo.op,
+      base: tipo.base(concepto.trim()),
+      valor: tipo.valor === 'pct' ? valor / 100 : tipo.valor === 'monto' ? valor : null,
+      invertir,
+      orden: tipo.orden,
+      fijo: false,
+    });
+  };
+
+  return (
+    <div className="mt-3 space-y-3 rounded-lg border border-emerald-200 bg-emerald-50/40 p-3">
+      <p className="text-xs font-semibold text-slate-700">Nueva forma de estimar</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1 text-xs text-slate-500">
+          Nombre
+          <input
+            value={nombre}
+            onChange={(e) => setNombre(e.target.value)}
+            placeholder="p. ej. 2 % de la venta"
+            className="rounded border border-slate-200 bg-white px-2 py-1.5 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-slate-500">
+          Cómo se calcula
+          <select
+            value={tipoId}
+            onChange={(e) => {
+              const t = TIPOS_FORMA.find((x) => x.id === e.target.value)!;
+              setTipoId(t.id);
+              setInvertir(t.invertir);
+            }}
+            className="rounded border border-slate-200 bg-white px-2 py-1.5 text-sm"
+          >
+            {TIPOS_FORMA.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {tipo.valor && (
+          <label className="flex flex-col gap-1 text-xs text-slate-500">
+            {tipo.valor === 'pct' ? 'Porcentaje (%)' : 'Monto (USD)'}
+            <input
+              type="number"
+              step="any"
+              value={valor}
+              onChange={(e) => setValor(+e.target.value || 0)}
+              className="rounded border border-slate-200 bg-white px-2 py-1.5 text-right font-mono text-sm"
+            />
+          </label>
+        )}
+        {tipo.pideConcepto && (
+          <label className="flex flex-col gap-1 text-xs text-slate-500">
+            Concepto de {empresa}
+            <input
+              value={concepto}
+              onChange={(e) => setConcepto(e.target.value)}
+              placeholder="p. ej. Personal Fijo"
+              className="rounded border border-slate-200 bg-white px-2 py-1.5 text-sm"
+            />
+          </label>
+        )}
+        <label className="flex items-center gap-2 text-xs text-slate-600 sm:col-span-2">
+          <input type="checkbox" checked={invertir} onChange={(e) => setInvertir(e.target.checked)} />
+          Invertir el signo (la venta es negativa: un % de la venta como gasto va invertido)
+        </label>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={crear}
+          disabled={!valido}
+          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+        >
+          Crear y seleccionar
+        </button>
+        <button
+          type="button"
+          onClick={onCancelar}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Cancelar
+        </button>
+      </div>
+    </div>
+  );
 }

@@ -86,6 +86,8 @@ export interface PestanaReglasProps {
   /** Nº de cuentas fuera del catálogo (validación 7, remite a Alertas). */
   cuentasFueraCatalogo?: number;
   onModRegla: (key: string, cambios: Partial<Override>) => void;
+  /** Crea (o guarda) un método nuevo desde el panel de una regla. */
+  onCrearMetodo?: (m: Metodo) => void;
   onEliminarRegla: (key: string) => void;
   onRestaurarRegla: (key: string) => void;
   onCrearNuevas: (reglas: NuevaRegla[]) => void;
@@ -115,6 +117,7 @@ export default function PestanaReglas({
   eliminadas,
   cuentasFueraCatalogo,
   onModRegla,
+  onCrearMetodo,
   onEliminarRegla,
   onRestaurarRegla,
   onCrearNuevas,
@@ -328,6 +331,7 @@ export default function PestanaReglas({
                       metodos={metodos}
                       serieConcepto={(reglas[i].serie ?? []).filter((x) => !Number.isNaN(x))}
                       serieVenta={serieVentaDe(empresa)}
+                      onCrearMetodo={onCrearMetodo}
                       onGuardar={(cambios) => {
                         onModRegla(key, cambios);
                         setPanelKey(null);

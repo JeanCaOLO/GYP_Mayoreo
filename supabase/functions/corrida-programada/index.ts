@@ -19,6 +19,14 @@
 //   0. Lee la config de `proyeccion_programacion` (fila id=1): activa, frecuencia
 //      (diaria|habiles|semanal + dia_semana), hora_local, zona,
 //      exige_datos_frescos, periodo (null = mes de trabajo vigente).
+//      ¿TOCA AHORA? pg_cron la llama cada 5 minutos; la función solo corre si
+//      hoy toca según la frecuencia, ya pasó la `hora_local` en Caracas y aún
+//      no hubo corrida programada desde esa hora. Así un cambio de horario en
+//      la pantalla rige sin reprogramar el cron. `{"manual": true}` lo salta.
+//   0b. PASO `extraccion`: consulta Fabric vía la Edge Function
+//      `refrescar-proyeccion-fabric`, que escribe histórico y parámetros en
+//      Supabase. Un 409 (el corte no avanzó) no es error: se sigue con lo que
+//      ya hay. Un fallo se registra y decide la guardia de datos frescos.
 //   1. GUARDIA DE SOLAPAMIENTO (CP-56 #6 / R-27.7): si hay una corrida `en_curso`
 //      para el periodo, la nueva se marca `omitida` y termina.
 //   2. GUARDIA DE DATOS FRESCOS (CP-56 #4 / R-27.6): si `exige_datos_frescos` y la
@@ -72,8 +80,11 @@
 //     "filas":    FilaSalida[],     // opcional. Filas de los DOS escenarios ya
 //                                   //   calculadas por el motor (caso (a) arriba).
 //     "dimCuenta": string[],        // opcional. Se reenvía a publicar-proyeccion.
-//     "forzar":   false             // opcional. Si true, salta el guardia de
+//     "forzar":   false,            // opcional. Si true, salta el guardia de
 //                                   //   datos frescos aun con exige_datos_frescos.
+//     "manual":   false,            // opcional. Si true, corre ya sin mirar el
+//                                   //   horario (y aunque esté pausada).
+//     "sinExtraccion": false        // opcional. Si true, no consulta Fabric.
 //   }
 //
 // Credenciales fuera del navegador (R-NN-5): SUPABASE_URL y
@@ -138,7 +149,7 @@ interface ItemChecklist {
 // Bitácora: `proyeccion_corrida`, un registro por paso (CP-56 #? / R-27.8)
 // ─────────────────────────────────────────────────────────────────────────────
 
-type Paso = "calculo" | "publicacion";
+type Paso = "extraccion" | "calculo" | "publicacion";
 type EstadoCorrida = "en_curso" | "ok" | "error" | "omitida";
 
 /**
@@ -162,7 +173,7 @@ async function abrirCorrida(
       filas: extra.filas ?? null,
       corte: extra.corte ?? null,
       mensaje: extra.mensaje ?? null,
-      lanzada_por: "pg_cron",
+      lanzada_por: LANZADA_POR,
       // `inicio` lo pone el default now(); si el estado ya es terminal, cerramos fin.
       fin: estado === "en_curso" ? null : new Date().toISOString(),
     })
@@ -228,6 +239,140 @@ function hoyEnZona(zona: string): string {
     day: "2-digit",
   });
   return fmt.format(new Date()); // "2026-10-22"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ¿Toca correr ahora? (el cron llama cada 5 minutos)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Quién lanzó la corrida, para la bitácora. Se fija por petición en el handler. */
+let LANZADA_POR = "pg_cron";
+
+/** Una corrida `en_curso` más vieja que esto se da por caída y no bloquea. */
+const CORRIDA_COLGADA_MS = 30 * 60 * 1000;
+
+/** Fecha y hora "de pared" de un instante en la zona dada. */
+function partesEnZona(instante: Date, zona: string) {
+  const f = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zona,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const p = Object.fromEntries(f.formatToParts(instante).map((x) => [x.type, x.value]));
+  return {
+    fecha: `${p.year}-${p.month}-${p.day}`,
+    anio: +p.year,
+    mes: +p.month,
+    dia: +p.day,
+    hora: +p.hour,
+    minuto: +p.minute,
+    segundo: +p.second,
+  };
+}
+
+/**
+ * Instante UTC que corresponde a `fecha` + `hora` (HH:MM) de pared en `zona`.
+ * Se calcula el desfase de la zona con Intl en vez de escribir −4 a mano (R-27.2).
+ */
+function instanteDeLocal(fecha: string, hora: string, zona: string): Date {
+  const [a, m, d] = fecha.split("-").map(Number);
+  const [hh, mm] = hora.split(":").map(Number);
+  const supuesto = Date.UTC(a, m - 1, d, hh, mm, 0);
+  const p = partesEnZona(new Date(supuesto), zona);
+  const comoUtc = Date.UTC(p.anio, p.mes - 1, p.dia, p.hora, p.minuto, p.segundo);
+  return new Date(supuesto - (comoUtc - supuesto));
+}
+
+/** Día ISO (1 = lunes … 7 = domingo) de una fecha 'aaaa-mm-dd'. */
+function diaIso(fecha: string): number {
+  const [a, m, d] = fecha.split("-").map(Number);
+  return ((new Date(Date.UTC(a, m - 1, d)).getUTCDay() + 6) % 7) + 1;
+}
+
+/**
+ * Decide si la corrida programada toca ahora: hoy (en la zona) es un día de la
+ * frecuencia, ya pasó `hora_local` y no hubo corrida programada desde entonces.
+ * Devuelve el instante programado de hoy para la bitácora.
+ */
+async function tocaAhora(
+  db: SupabaseClient,
+  prog: Programacion,
+  zona: string,
+): Promise<{ toca: boolean; motivo: string }> {
+  const ahora = new Date();
+  const hoy = partesEnZona(ahora, zona).fecha;
+  const iso = diaIso(hoy);
+  const diaOk =
+    prog.frecuencia === "habiles"
+      ? iso >= 1 && iso <= 5
+      : prog.frecuencia === "semanal"
+        ? iso === (prog.dia_semana ?? 1)
+        : true;
+  if (!diaOk) return { toca: false, motivo: `hoy (${hoy}) no toca según la frecuencia ${prog.frecuencia}.` };
+
+  const programada = instanteDeLocal(hoy, prog.hora_local.slice(0, 5), zona);
+  if (ahora < programada) {
+    return { toca: false, motivo: `aún no son las ${prog.hora_local.slice(0, 5)} en ${zona}.` };
+  }
+
+  const { data, error } = await db
+    .from("proyeccion_corrida")
+    .select("id")
+    .eq("origen", "programada")
+    .gte("inicio", programada.toISOString())
+    .limit(1);
+  if (error) throw new Error(`No se pudo leer la bitácora: ${error.message}`);
+  if (data && data.length > 0) {
+    return { toca: false, motivo: `ya corrió hoy después de las ${prog.hora_local.slice(0, 5)}.` };
+  }
+  return { toca: true, motivo: `programada ${hoy} ${prog.hora_local.slice(0, 5)} (${zona}).` };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extracción: consulta Fabric vía refrescar-proyeccion-fabric
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Llama a la Edge Function que consulta Fabric y escribe histórico y parámetros
+ * en Supabase. `escrito` = hubo datos nuevos; `sinCambios` = una guarda frenó la
+ * escritura (409, p. ej. el corte no avanzó): no es un fallo.
+ */
+async function extraerDeFabric(
+  supabaseUrl: string,
+  serviceKey: string,
+  periodo: string,
+): Promise<{ escrito: boolean; sinCambios: boolean; corte: string | null; mensaje: string }> {
+  const resp = await fetch(`${supabaseUrl}/functions/v1/refrescar-proyeccion-fabric`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${serviceKey}`,
+      apikey: serviceKey,
+    },
+    body: JSON.stringify({ periodo }),
+  });
+  const cuerpo = await resp.json().catch(() => null);
+  if (resp.ok && cuerpo?.escrito) {
+    return {
+      escrito: true,
+      sinCambios: false,
+      corte: cuerpo.corte ?? null,
+      mensaje: `Fabric extraído: ${cuerpo.conceptos ?? "—"} conceptos, corte ${cuerpo.corte ?? "—"}.`,
+    };
+  }
+  if (resp.status === 409) {
+    const motivo = (cuerpo?.errores && cuerpo.errores[0]) || "guardas no superadas";
+    return { escrito: false, sinCambios: true, corte: null, mensaje: `Fabric sin datos nuevos: ${motivo}` };
+  }
+  throw new Error(
+    (cuerpo && (cuerpo.error || cuerpo.mensaje)) ??
+      `refrescar-proyeccion-fabric respondió ${resp.status}`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -486,11 +631,20 @@ serve(async (req: Request) => {
     const prog = progRow as Programacion;
     const zona = prog.zona || "America/Caracas";
 
-    // La programación puede estar pausada; el cron no debería ni llamar, pero si
-    // lo hace (p.ej. el job quedó activo), respetamos el estado y no hacemos nada.
-    if (!prog.activa) {
+    // Disparo manual (botón o prueba): corre ya, sin mirar horario ni pausa.
+    const manual = body.manual === true;
+    LANZADA_POR = manual ? "manual" : "pg_cron";
+
+    // La programación puede estar pausada: el cron sigue llamando cada 5 minutos,
+    // pero no se hace nada hasta que la reactiven en la pantalla.
+    if (!prog.activa && !manual) {
       log.push("programación pausada (activa=false): no se ejecuta.");
       return json({ ok: true, ejecutada: false, motivo: "pausada", log });
+    }
+    if (!manual) {
+      const t = await tocaAhora(db, prog, zona);
+      log.push(t.motivo);
+      if (!t.toca) return json({ ok: true, ejecutada: false, motivo: "fuera_de_horario", log });
     }
 
     // Periodo: body → config → mes vigente en Caracas.
@@ -501,6 +655,15 @@ serve(async (req: Request) => {
     log.push(`periodo de trabajo: ${periodo} (zona ${zona})`);
 
     // 1. GUARDIA DE SOLAPAMIENTO (CP-56 #6 / R-27.7).
+    // Una corrida `en_curso` de hace más de 30 min se da por caída: se cierra
+    // como error para que no bloquee para siempre a las siguientes.
+    const limiteColgada = new Date(Date.now() - CORRIDA_COLGADA_MS).toISOString();
+    await db
+      .from("proyeccion_corrida")
+      .update({ estado: "error", fin: new Date().toISOString(), mensaje: "quedó en curso más de 30 min; se da por caída." })
+      .eq("periodo", periodo)
+      .eq("estado", "en_curso")
+      .lt("inicio", limiteColgada);
     const { data: enCurso, error: eCurso } = await db
       .from("proyeccion_corrida")
       .select("id, paso, inicio")
@@ -513,6 +676,27 @@ serve(async (req: Request) => {
       log.push(msg);
       await abrirCorrida(db, periodo, "calculo", "omitida", { mensaje: msg });
       return json({ ok: true, ejecutada: false, motivo: "solapamiento", periodo, log });
+    }
+
+    // 1b. PASO EXTRACCIÓN: consultar Fabric y escribir en Supabase antes de
+    // recalcular. Si falla, se registra y la guardia de datos frescos decide.
+    if (body.sinExtraccion !== true) {
+      const idExt = await abrirCorrida(db, periodo, "extraccion", "en_curso");
+      try {
+        const ext = await extraerDeFabric(supabaseUrl, serviceKey, periodo);
+        log.push(ext.mensaje);
+        await cerrarCorrida(db, idExt, ext.escrito ? "ok" : "omitida", {
+          mensaje: ext.mensaje,
+          corte: ext.corte,
+        });
+      } catch (errExt) {
+        const msg =
+          "extracción de Fabric falló: " +
+          String(errExt instanceof Error ? errExt.message : errExt) +
+          ". Se recalcula con los últimos datos de Supabase.";
+        log.push(msg);
+        await cerrarCorrida(db, idExt, "error", { mensaje: msg });
+      }
     }
 
     // 2. GUARDIA DE DATOS FRESCOS (CP-56 #4 / R-27.6).
@@ -667,64 +851,8 @@ function json(payload: unknown, status = 200): Response {
 // JOB DE pg_cron QUE INVOCA ESTA FUNCIÓN (CP-56, R-27.3)
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// La corrida la dispara pg_cron DEL LADO DEL SERVIDOR, nunca el navegador. pg_cron
-// trabaja en UTC, así que la `hora_local` (en Caracas) se convierte a UTC al
-// definir el job. La zona viaja con el dato; la conversión la hace el backend al
-// programar, NUNCA se escribe un −4 a mano en el código.
-//
-//   Caracas = UTC−04:00, sin horario de verano.  →  06:45 Caracas = 10:45 UTC.
-//
-// Requiere las extensiones `pg_cron` y `pg_net` (ambas disponibles en Supabase):
-//
-//   create extension if not exists pg_cron;
-//   create extension if not exists pg_net;
-//
-// Ejemplo: publicar todos los días a las 06:45 de Caracas (= 10:45 UTC).
-// El cron de abajo usa minuto=45 hora=10 (UTC). Si la config cambia de hora, se
-// recrea el job con la nueva hora convertida a UTC (ver la función de ayuda).
-//
-//   select cron.schedule(
-//     'corrida-programada-gyp',           -- nombre del job
-//     '45 10 * * *',                      -- 10:45 UTC = 06:45 America/Caracas
-//     $$
-//       select net.http_post(
-//         url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/corrida-programada',
-//         headers := jsonb_build_object(
-//                      'Content-Type',  'application/json',
-//                      'Authorization', 'Bearer ' || current_setting('app.service_role_key', true)
-//                    ),
-//         body    := '{}'::jsonb           -- periodo lo resuelve la función (mes vigente)
-//       );
-//     $$
-//   );
-//
-// NOTA sobre la credencial: en Supabase se suele guardar el service_role_key en
-// `vault` o en un GUC (`app.service_role_key`) en lugar de incrustarlo en el SQL
-// (R-NN-5). Ajustar el header a como esté guardado el secreto en el proyecto.
-//
-// ── Conversión Caracas → UTC al (re)crear el job ────────────────────────────
-// Si se quiere derivar el patrón de cron desde `proyeccion_programacion` en vez de
-// escribirlo a mano, Postgres convierte la zona por nosotros (sin −4 literal):
-//
-//   -- Devuelve 'mm hh * * *' en UTC a partir de hora_local + zona de la config.
-//   with cfg as (
-//     select hora_local, zona from proyeccion_programacion where id = 1
-//   ),
-//   utc as (
-//     select ( (current_date + hora_local) at time zone zona  -- interpreta en Caracas
-//                                          at time zone 'UTC'  -- lleva a UTC
-//            )::time as h
-//     from cfg
-//   )
-//   select to_char(h, 'MI HH24') || ' * * *' from utc;   -- p.ej. '45 10 * * *'
-//
-// La frecuencia (diaria | habiles | semanal + dia_semana) también se traduce al
-// patrón de cron:
-//   - diaria   : 'MI HH * * *'
-//   - semanal  : 'MI HH * * D'      (D = dia_semana, 0/7=domingo … 6=sábado)
-//   - habiles  : 'MI HH * * 1-5'    (lun–vie; los feriados de Venezuela los filtra
-//                                     la propia función si hiciera falta)
-//
-// Para reprogramar tras un cambio en la UI: cron.unschedule('corrida-programada-gyp')
-// y volver a cron.schedule con el nuevo patrón UTC.
+// Lo crea supabase/migrations/20261028120000_cron_corrida_programada.sql: pg_cron
+// llama a esta función CADA 5 MINUTOS y la función decide si toca (frecuencia +
+// hora_local de Caracas). Por eso cambiar el horario en la pantalla no exige
+// reprogramar el cron.
 // ═════════════════════════════════════════════════════════════════════════════

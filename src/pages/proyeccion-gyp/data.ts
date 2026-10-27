@@ -48,6 +48,8 @@ export interface ProyeccionData {
   series: Record<string, SerieCuenta>;
   /** Reglas base (sin overrides del usuario). */
   reglasBase: ReglaBase[];
+  /** ids de métodos que ya existen en `proyeccion_metodo` (la regla los referencia). */
+  metodosEnBase?: string[];
 }
 
 export interface ReglaBase {
@@ -201,7 +203,11 @@ export async function cargarDesdeSupabase(
         fijo: row.de_fabrica,
       };
     });
-    data.metodos = metodos;
+    // Se superponen a los de la semilla: la base puede no traer los métodos
+    // nuevos del §D (mediana, último, ratio, presupuesto) y sin ellos las
+    // tarjetas de «¿Cómo quieres estimar el mes?» no encuentran a qué cambiar.
+    data.metodos = { ...seed.metodos, ...metodos };
+    data.metodosEnBase = Object.keys(metodos);
     encontroAlgo = true;
   }
 
@@ -1255,6 +1261,41 @@ export async function guardarFactorMes(
     .select('periodo,empresa');
   if (error) return { ok: false, motivo: 'error', error };
   return { ok: true };
+}
+
+/** Respuesta de la Edge Function `corrida-programada`. */
+export interface ResultadoCorrida {
+  ok: boolean;
+  ejecutada?: boolean;
+  motivo?: string;
+  periodo?: string;
+  publicado?: Record<string, number>;
+  error?: string;
+  /** Pasos en palabras: extracción, guardias, recálculo, publicación. */
+  log?: string[];
+}
+
+/**
+ * Corre YA la actualización programada (botón «Ejecutar ahora»): consulta
+ * Fabric, recalcula los dos escenarios y publica en v_proyeccion_final, sin
+ * esperar a la hora configurada. Queda en la bitácora con origen 'manual'.
+ */
+export async function ejecutarCorridaAhora(periodo?: string): Promise<ResultadoCorrida> {
+  const { data, error } = await supabase.functions.invoke('corrida-programada', {
+    body: { manual: true, ...(periodo && { periodo }) },
+  });
+  if (error) {
+    const ctx = (error as unknown as { context?: { body?: unknown } }).context;
+    if (ctx?.body) {
+      try {
+        return (typeof ctx.body === 'string' ? JSON.parse(ctx.body) : ctx.body) as ResultadoCorrida;
+      } catch {
+        /* cae al return de abajo */
+      }
+    }
+    return { ok: false, error: (error as Error).message };
+  }
+  return data as ResultadoCorrida;
 }
 
 /** Respuesta de la publicación vía Edge Function `publicar-proyeccion`. */
