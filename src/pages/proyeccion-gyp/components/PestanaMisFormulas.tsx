@@ -22,10 +22,11 @@
  * contra el contexto de la regla elegida (venta, histórico, presupuesto, otras
  * reglas). No invoca el motor completo para no arrastrar el oráculo de 190 casos.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { BaseCapas, Causado, Metodo, OpPaso, Paso, Regla } from '../engine';
 import {
   actualizarFormula as persistirActualizar,
+  cargarFormulas,
   crearFormula as persistirCrear,
   eliminarFormula as persistirEliminar,
 } from '../data';
@@ -89,6 +90,8 @@ export interface PestanaMisFormulasProps {
   ventaPorEmpresa?: Record<string, number>;
   /** Avisos (toast). Opcional; si falta, los mensajes se muestran en línea. */
   onAviso?: (tipo: 'success' | 'error' | 'info', texto: string) => void;
+  /** Guarda un método del sistema editado (nombre, valor por defecto, invertir). */
+  onGuardarMetodo?: (m: Metodo) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,15 +224,40 @@ function baseDePieza(p: Pieza): BaseCapas {
   return { origen: 'real', ref: 'ninguna' };
 }
 
+/** Datos de la pieza que viajan junto al `Paso` para poder reabrirla en el editor. */
+type PasoConPieza = Paso & { pieza?: Pick<Pieza, 'tipo' | 'fuente' | 'referencia'> };
+
 /** Convierte las piezas (con signo) en la secuencia de `Paso` del motor v2. */
 function piezasAPasos(piezas: Pieza[]): Paso[] {
-  return piezas.map((p) => ({
-    op: OP_DE_PIEZA[p.tipo],
-    base: baseDePieza(p),
-    valor: p.valor,
-    n: p.tipo === 'tipico_cuentas' ? p.meses : null,
-    invertir: p.signo < 0,
-  }));
+  return piezas.map(
+    (p): PasoConPieza => ({
+      op: OP_DE_PIEZA[p.tipo],
+      base: baseDePieza(p),
+      valor: p.valor,
+      n: p.tipo === 'tipico_cuentas' ? p.meses : null,
+      invertir: p.signo < 0,
+      pieza: { tipo: p.tipo, fuente: p.fuente, referencia: p.referencia },
+    }),
+  );
+}
+
+/** Inversa de `piezasAPasos`: reconstruye las piezas de una fórmula guardada. */
+function pasosAPiezas(pasos: Paso[]): Pieza[] {
+  const tipoDeOp = Object.fromEntries(
+    Object.entries(OP_DE_PIEZA).map(([t, op]) => [op, t as TipoPieza]),
+  ) as Partial<Record<OpPaso, TipoPieza>>;
+  return (pasos as PasoConPieza[]).map((paso) => {
+    const prefijo = paso.base?.capas?.find((c) => c.tipo === 'prefijo_cuenta')?.valores?.[0];
+    return {
+      id: nuevoId(),
+      tipo: paso.pieza?.tipo ?? tipoDeOp[paso.op] ?? 'monto_fijo',
+      signo: paso.invertir ? -1 : 1,
+      valor: paso.valor ?? 0,
+      fuente: paso.pieza?.fuente ?? (prefijo ? 'prefijo' : 'este'),
+      referencia: paso.pieza?.referencia ?? prefijo ?? '',
+      meses: paso.n ?? 9,
+    };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -295,9 +323,12 @@ export default function PestanaMisFormulas({
   metodos = {},
   ventaPorEmpresa = {},
   onAviso,
+  onGuardarMetodo,
 }: PestanaMisFormulasProps) {
   // Biblioteca de fórmulas propias (estado local; fuente de verdad en la UI).
   const [formulas, setFormulas] = useState<Formula[]>([]);
+  // Método del sistema en edición.
+  const [metodoEditando, setMetodoEditando] = useState<Metodo | null>(null);
   // Catálogo del desplegable: fábrica + propias (CP-28).
   const [mostrarFabrica, setMostrarFabrica] = useState(false);
 
@@ -312,6 +343,41 @@ export default function PestanaMisFormulas({
   const aviso = (tipo: 'success' | 'error' | 'info', texto: string) => {
     if (onAviso) onAviso(tipo, texto);
   };
+
+  // Las fórmulas guardadas en `proyeccion_formula` se cargan al abrir la pestaña
+  // para poder editarlas. Sin base (modo demo) la biblioteca arranca vacía.
+  useEffect(() => {
+    let vivo = true;
+    cargarFormulas()
+      .then((guardadas) => {
+        if (!vivo) return;
+        setFormulas(
+          guardadas.map((g) => ({
+            id: g.id,
+            rev: g.rev,
+            nombre: g.nombre,
+            piezas: pasosAPiezas(g.pasos),
+            causado: g.causado,
+            deFabrica: false,
+            usadaPor: [],
+          })),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      vivo = false;
+    };
+  }, []);
+
+  // Métodos del sistema (los que eligen las reglas), con cuántas reglas los usan.
+  const listaMetodos = useMemo(
+    () =>
+      Object.values(metodos).map((m) => ({
+        metodo: m,
+        usos: reglas.filter((r) => r.metodo === m.id).length,
+      })),
+    [metodos, reglas],
+  );
 
   // «Las otras reglas» como un total aproximado para la pieza % de reglas.
   const otrasReglasTotal = useMemo(
@@ -484,7 +550,7 @@ export default function PestanaMisFormulas({
                   className="shrink-0 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                   title="Editar crea una copia y conserva la original"
                 >
-                  Usar como base
+                  Editar (crea copia)
                 </button>
               </li>
             ))}
@@ -538,6 +604,61 @@ export default function PestanaMisFormulas({
             </li>
           ))}
         </ul>
+      )}
+
+      {/* Métodos del sistema: los que eligen las reglas. Editarlos cambia el
+          cálculo de todas las reglas que los usan sin valor propio. */}
+      <div className="rounded-lg border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 px-4 py-3">
+          <h3 className="text-sm font-semibold text-slate-900">Métodos del sistema</h3>
+          <p className="text-xs text-slate-500">
+            Los métodos que eligen las reglas. Editar el valor por defecto recalcula todas las reglas
+            que lo usan sin valor propio.
+          </p>
+        </div>
+        <ul className="divide-y divide-slate-100">
+          {listaMetodos.map(({ metodo: m, usos }) => (
+            <li key={m.id} className="flex items-center justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-slate-800">
+                  {m.nombre}
+                  <span className="ml-2 font-mono text-[11px] text-slate-400">{m.id}</span>
+                </p>
+                <p className="truncate text-xs text-slate-500">
+                  {m.op}
+                  {m.base !== 'ninguna' ? ` sobre ${m.base}` : ''}
+                  {m.valor != null ? ` · valor ${valorMetodoStr(m)}` : ''}
+                  {m.invertir ? ' · invertido' : ''} · turno {m.orden} ·{' '}
+                  {usos === 0 ? 'sin reglas' : `${usos} regla${usos === 1 ? '' : 's'}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMetodoEditando({ ...m })}
+                disabled={!onGuardarMetodo}
+                className="shrink-0 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+              >
+                Editar
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {metodoEditando && (
+        <EditorMetodo
+          metodo={metodoEditando}
+          onChange={setMetodoEditando}
+          onCerrar={() => setMetodoEditando(null)}
+          onGuardar={(m) => {
+            if (!m.nombre.trim()) {
+              aviso('error', 'Ponle un nombre al método.');
+              return;
+            }
+            onGuardarMetodo?.(m);
+            setMetodoEditando(null);
+          }}
+        />
       )}
 
       {/* Editor de fórmula (armador por piezas + prueba de impacto). */}
@@ -865,6 +986,96 @@ function EditorFormula({
             className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
           >
             Guardar fórmula
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Editor de un método del sistema — nombre, valor por defecto e invertir
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Operaciones cuyo `valor` es un % en tanto por uno. */
+const esOpPorcentaje = (m: Metodo) => m.op === 'porcentaje';
+/** Operaciones que usan `valor` (el resto sale de la historia o de otras reglas). */
+const usaValor = (m: Metodo) =>
+  ['porcentaje', 'multiplicar', 'sumar', 'restar', 'valor_fijo'].includes(m.op);
+
+function valorMetodoStr(m: Metodo): string {
+  if (m.valor == null) return '—';
+  return esOpPorcentaje(m) ? pctStr(m.valor) : fmt(m.valor, 2);
+}
+
+interface EditorMetodoProps {
+  metodo: Metodo;
+  onChange: (m: Metodo) => void;
+  onGuardar: (m: Metodo) => void;
+  onCerrar: () => void;
+}
+
+function EditorMetodo({ metodo, onChange, onGuardar, onCerrar }: EditorMetodoProps) {
+  const pct = esOpPorcentaje(metodo);
+  return (
+    <Modal isOpen onClose={onCerrar} title="Editar método" size="md">
+      <div className="space-y-4">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-600">Nombre</label>
+          <input
+            type="text"
+            value={metodo.nombre}
+            onChange={(e) => onChange({ ...metodo, nombre: e.target.value })}
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+          />
+        </div>
+        <p className="text-xs text-slate-500">
+          Operación <span className="font-mono">{metodo.op}</span>
+          {metodo.base !== 'ninguna' ? ` sobre ${metodo.base}` : ''} · turno {metodo.orden}
+        </p>
+        {usaValor(metodo) ? (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Valor por defecto {pct ? '(%)' : '($)'}
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={metodo.valor == null ? '' : pct ? metodo.valor * 100 : metodo.valor}
+              onChange={(e) => {
+                const raw = e.target.value === '' ? null : Number(e.target.value);
+                onChange({ ...metodo, valor: raw == null ? null : pct ? raw / 100 : raw });
+              }}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+          </div>
+        ) : (
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+            Este método no usa un valor: sale de la historia, la venta u otras reglas.
+          </p>
+        )}
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={metodo.invertir}
+            onChange={(e) => onChange({ ...metodo, invertir: e.target.checked })}
+          />
+          Invertir el signo del resultado
+        </label>
+        <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
+          <button
+            type="button"
+            onClick={onCerrar}
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => onGuardar(metodo)}
+            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+          >
+            Guardar método
           </button>
         </div>
       </div>

@@ -1100,6 +1100,63 @@ export async function actualizarFormula(
   return { ok: true, rev: (data[0] as { rev: number }).rev };
 }
 
+/** Una fórmula propia tal como vive en `proyeccion_formula`. */
+export interface FormulaGuardada {
+  id: number;
+  nombre: string;
+  pasos: Paso[];
+  causado: Causado;
+  rev: number;
+}
+
+/**
+ * Lee las fórmulas propias de `proyeccion_formula` (CP-37) para que la
+ * biblioteca de «Mis fórmulas» sobreviva a la recarga y se puedan editar. Las
+ * de fábrica y las borradas lógicamente (si la columna `eliminada` existe) se
+ * omiten.
+ */
+export async function cargarFormulas(): Promise<FormulaGuardada[]> {
+  const { data, error } = await supabase
+    .from('proyeccion_formula')
+    .select('*')
+    .eq('de_fabrica', false)
+    .order('id');
+  if (error) throw error;
+  return ((data ?? []) as Array<FormulaGuardada & { eliminada?: boolean }>)
+    .filter((r) => !r.eliminada)
+    .map((r) => ({
+      id: r.id,
+      nombre: r.nombre,
+      pasos: Array.isArray(r.pasos) ? r.pasos : [],
+      causado: r.causado ?? 'igual',
+      rev: r.rev ?? 0,
+    }));
+}
+
+/**
+ * Guarda un método del sistema editado desde «Mis fórmulas» en
+ * `proyeccion_metodo` (nombre, valor por defecto e invertir). Es `upsert` por
+ * `id` para cubrir los métodos de la semilla que aún no están en la base.
+ */
+export async function guardarMetodo(m: Metodo): Promise<ResultadoEscritura> {
+  const { error } = await supabase.from('proyeccion_metodo').upsert(
+    {
+      id: m.id,
+      nombre: m.nombre,
+      operacion: m.op,
+      base: m.base,
+      valor: m.valor,
+      invertir: m.invertir,
+      turno: m.orden,
+      de_fabrica: m.fijo,
+      activo: true,
+    },
+    { onConflict: 'id' },
+  );
+  if (error) return { ok: false, motivo: 'error', error };
+  return { ok: true };
+}
+
 /**
  * Elimina una fórmula propia (CP-37). Si la tabla lleva `eliminada` hace borrado
  * lógico (CP-31); si no, cae a `DELETE` físico. Una fórmula de fábrica no se
@@ -1187,14 +1244,23 @@ export interface ResultadoPublicacion {
  *
  * Las `filas` son las 13 columnas del contrato (FilaResultado) de los DOS
  * escenarios; `dimCuenta` es opcional (si se omite, la función lee `dim_cuenta`).
+ * `escenarios` limita qué escenarios se escriben (default los dos): con `[2]` se
+ * ANEXA el causado a `v_proyeccion_final` sin tocar el proyectado publicado.
  */
 export async function publicarViaEdge(
   periodo: string,
   filas: FilaResultado[],
   dimCuenta?: string[],
+  escenarios?: Array<1 | 2>,
 ): Promise<ResultadoPublicacion> {
-  const body: { periodo: string; filas: FilaResultado[]; dimCuenta?: string[] } = { periodo, filas };
+  const body: {
+    periodo: string;
+    filas: FilaResultado[];
+    dimCuenta?: string[];
+    escenarios?: Array<1 | 2>;
+  } = { periodo, filas };
   if (dimCuenta) body.dimCuenta = dimCuenta;
+  if (escenarios) body.escenarios = escenarios;
   const { data, error } = await supabase.functions.invoke('publicar-proyeccion', { body });
   if (error) {
     // La función devuelve 400/409/500 con cuerpo JSON; supabase-js lo expone en context.

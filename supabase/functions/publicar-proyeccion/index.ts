@@ -37,6 +37,10 @@
 //     "dimCuenta": string[]               // opcional. Combinadas válidas del
 //                                         //   catálogo. Si se omite, la función
 //                                         //   las lee de la tabla dim_cuenta.
+//     "escenarios": (1|2)[]               // opcional. Qué escenarios escribir.
+//                                         //   Default [1, 2]. Con [2] se ANEXA el
+//                                         //   causado a v_proyeccion_final sin
+//                                         //   tocar el proyectado ya publicado.
 //   }
 //
 // Cada FilaSalida es el objeto de 13 columnas de `FilaResultado` (claves en
@@ -50,6 +54,7 @@
 // RESPUESTA
 // ─────────────────────────────────────────────────────────────────────────────
 //   200 { ok: true, periodo, publicado: { "1": nInsertadas, "2": nInsertadas } }
+//       (solo trae las llaves de los escenarios pedidos)
 //   200 { ok: false, motivo: "huerfanas", huerfanas: string[] }   // CP-07
 //   400 { ok: false, error }   // body inválido
 //   500 { ok: false, error }   // fallo de la RPC u otro
@@ -213,6 +218,16 @@ serve(async (req: Request) => {
       );
     }
 
+    // Escenarios a escribir: por defecto los dos. Un escenario que no se pide
+    // no se toca (su DELETE no corre), así el causado se puede anexar solo.
+    const pedidos: number[] = Array.isArray(body.escenarios)
+      ? body.escenarios.map(Number)
+      : [1, 2];
+    const aPublicar = ESCENARIOS.filter((e) => pedidos.includes(e.num));
+    if (aPublicar.length === 0) {
+      return json({ ok: false, error: "'escenarios' debe incluir 1 y/o 2." }, 400);
+    }
+
     // Catálogo de Combinadas válidas (CP-07): del body o de dim_cuenta.
     let catalogo: Set<string>;
     if (Array.isArray(body.dimCuenta)) {
@@ -232,8 +247,16 @@ serve(async (req: Request) => {
     const huerfanasTotales: string[] = [];
     const vistoHuerfana = new Set<string>();
 
-    for (const esc of ESCENARIOS) {
+    for (const esc of aPublicar) {
       const delEscenario = filasDelEscenario(filas, esc);
+      // Nunca vaciar un escenario porque el lote no trajo filas suyas: el
+      // DELETE de la RPC borraría lo publicado sin reponerlo.
+      if (delEscenario.length === 0) {
+        return json(
+          { ok: false, error: `No llegaron filas del escenario ${esc.num}; no se publicó nada.` },
+          400,
+        );
+      }
       const fusionadas = fusionarPorCombinada(delEscenario);
       const huerfanas = validarContraCatalogo(fusionadas, catalogo);
       for (const h of huerfanas) {

@@ -18,6 +18,7 @@ import {
   publicarViaEdge,
   refrescarDesdeFabric,
   guardarFactorMes,
+  guardarMetodo,
   cargarProgramacion,
   guardarProgramacion,
   cargarUltimaPublicacion,
@@ -347,6 +348,20 @@ export default function ProyeccionGypPage() {
   const crearNuevas = (nuevasReglas: NuevaRegla[]) =>
     setNuevas((prev) => [...prev, ...nuevasReglas]);
 
+  // Editar un método del sistema desde «Mis fórmulas»: se aplica de inmediato al
+  // cálculo (vía `metodosUser`) y se persiste en `proyeccion_metodo`.
+  const editarMetodo = (m: Metodo) => {
+    setMetodosUser((prev) => ({ ...prev, [m.id]: m }));
+    guardarMetodo(m).then((r) =>
+      addToast(
+        r.ok ? 'success' : 'error',
+        r.ok
+          ? `Método «${m.nombre}» actualizado.`
+          : `Método «${m.nombre}» aplicado en pantalla, pero no se pudo guardar en la base.`,
+      ),
+    );
+  };
+
   // ── Mes de trabajo (CP-33) ──
   // Elegir un mes lo fija para todos y limpia el detalle por cuenta, los repartos
   // y el presupuesto del anterior; los conceptos sin movimiento quedan en cero.
@@ -406,7 +421,9 @@ export default function ProyeccionGypPage() {
   );
 
   // ── Publicar resultado a Supabase ──
-  const publicar = async () => {
+  // `soloCausado` ANEXA el escenario 2 a v_proyeccion_final: la Edge Function
+  // reemplaza solo (periodo, escenario = 2) y deja intacto el proyectado.
+  const publicar = async (soloCausado = false) => {
     // CP-47 / Req 22.3: la prueba contable gobierna la publicación.
     if (pruebaMalasCP47.length) {
       addToast(
@@ -417,7 +434,11 @@ export default function ProyeccionGypPage() {
     }
     if (
       !window.confirm(
-        '¿Publicar la proyección a la base? Reemplaza el resultado del periodo ' + data.periodo + '.',
+        soloCausado
+          ? '¿Agregar el causado (Proyeccion = 2) a v_proyeccion_final para ' +
+              data.periodo +
+              '? Reemplaza solo el causado anterior del periodo; el proyectado publicado no se toca.'
+          : '¿Publicar la proyección a la base? Reemplaza el resultado del periodo ' + data.periodo + '.',
       )
     )
       return;
@@ -429,18 +450,21 @@ export default function ProyeccionGypPage() {
       // server-side, para que ambas produzcan EXACTAMENTE las mismas filas. La
       // Edge Function `publicar-proyeccion` recorre ambos escenarios y hace
       // DELETE+INSERT idempotente por (periodo, escenario).
-      const filas: FilaResultado[] = construirFilasEscenarios(data.periodo, {
+      const todas: FilaResultado[] = construirFilasEscenarios(data.periodo, {
         reglas,
         metodos,
         params,
         empresas: EMPRESAS,
         gn,
       });
-      const res = await publicarViaEdge(data.periodo, filas);
+      const filas = soloCausado ? todas.filter((f) => f.proyeccion === 2) : todas;
+      const res = await publicarViaEdge(data.periodo, filas, undefined, soloCausado ? [2] : undefined);
       if (res.ok) {
         addToast(
           'success',
-          `Proyección publicada: ${filas.length} filas (proyectado + causado) en proyeccion_resultado.`,
+          soloCausado
+            ? `Causado agregado a v_proyeccion_final: ${res.publicado?.['2'] ?? filas.length} filas con Proyeccion = 2.`
+            : `Proyección publicada: ${filas.length} filas (proyectado + causado) en proyeccion_resultado.`,
         );
       } else if (res.motivo === 'huerfanas') {
         addToast(
@@ -449,42 +473,12 @@ export default function ProyeccionGypPage() {
             `Revisa el catálogo antes de publicar.`,
         );
       } else {
-        addToast('error', 'No se pudo publicar: ' + (res.mensaje ?? 'error del servidor.'));
+        addToast('error', 'No se pudo publicar: ' + (res.mensaje ?? (res.error ? String(res.error) : 'error del servidor.')));
       }
     } catch (err) {
       addToast('error', 'No se pudo publicar: ' + (err as Error).message);
     } finally {
       setPublicando(false);
-    }
-  };
-
-  // ── Tabla de salida (13 columnas) ──
-  const copiarCsv = async () => {
-    const header =
-      'FECHA;Ajuste;Vista;Combinada;Pais;Empresa;Tasa_Mensual;Ajuste_USD;Monto_Local;Monto_USD;CENTRO_COSTO;CUENTA_CONTABLE;Proyeccion';
-    const lineas = reglas.map((r, i) =>
-      [
-        data.periodo + '-01',
-        0,
-        'GYP',
-        r.combinada,
-        r.pais,
-        r.empresa,
-        r.tasaMensual == null ? '' : r.tasaMensual,
-        0,
-        (val[i] * (params[r.empresa]?.tasa || 0)).toFixed(2),
-        val[i].toFixed(2),
-        r.cc,
-        r.cuenta,
-        1,
-      ].join(';'),
-    );
-    const txt = [header, ...lineas].join('\n');
-    try {
-      await navigator.clipboard.writeText(txt);
-      addToast('success', 'Tabla copiada como CSV (' + reglas.length + ' filas).');
-    } catch {
-      addToast('error', 'No se pudo copiar al portapapeles.');
     }
   };
 
@@ -650,8 +644,8 @@ export default function ProyeccionGypPage() {
           periodo={data.periodo}
           isAdmin={isAdmin}
           publicando={publicando}
-          onCopiarCsv={copiarCsv}
-          onPublicar={publicar}
+          onPublicar={() => publicar(false)}
+          onPublicarCausado={() => publicar(true)}
         />
       )}
 
@@ -682,6 +676,7 @@ export default function ProyeccionGypPage() {
           metodos={metodos}
           ventaPorEmpresa={proyeccion.venta}
           onAviso={addToast}
+          onGuardarMetodo={editarMetodo}
         />
       )}
 

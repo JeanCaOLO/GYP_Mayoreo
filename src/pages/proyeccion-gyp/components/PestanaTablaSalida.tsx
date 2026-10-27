@@ -9,8 +9,9 @@ import { fmt } from './formato';
  * Las trece columnas de F_Mayor en el mismo orden del contrato (CP-04/05/52).
  * Muestra los DOS escenarios (Proyectado = 1, Causado = 2) con un selector, y
  * permite copiar el CSV, descargar el CSV y generar el `.xlsx` en el navegador
- * (CP-55, Requirement 22.4). El botón «Publicar a la base» (solo admin) se
- * conserva del módulo actual.
+ * (CP-55, Requirement 22.4) del escenario SELECCIONADO. «Publicar a la base»
+ * (solo admin) escribe los dos escenarios; en Causado, «Agregar causado a la
+ * tabla final» anexa solo el escenario 2 a `v_proyeccion_final`.
  */
 export interface PestanaTablaSalidaProps {
   reglas: Regla[];
@@ -22,8 +23,9 @@ export interface PestanaTablaSalidaProps {
   periodo: string;
   isAdmin: boolean;
   publicando: boolean;
-  onCopiarCsv: () => void;
   onPublicar: () => void;
+  /** Anexa solo el causado (Proyeccion = 2) a v_proyeccion_final. */
+  onPublicarCausado: () => void;
 }
 
 const COLUMNAS = [
@@ -52,8 +54,8 @@ export default function PestanaTablaSalida({
   periodo,
   isAdmin,
   publicando,
-  onCopiarCsv,
   onPublicar,
+  onPublicarCausado,
 }: PestanaTablaSalidaProps) {
   const { addToast } = useToast();
   const [escenario, setEscenario] = useState<EscenarioSalida>('proyeccion');
@@ -80,13 +82,24 @@ export default function PestanaTablaSalida({
       codigo,
     ]);
 
-  /** Las filas de los dos escenarios en append (Proyeccion = 1 | 2). */
-  const filasAmbos = useMemo(() => {
-    const out = filasDe(val, 1);
-    if (hayCausado) out.push(...filasDe(valCausado!, 2));
-    return out;
+  /** Las filas del escenario seleccionado: lo que se ve es lo que se exporta. */
+  const filasEscenario = useMemo(
+    () => filasDe(valEscenario, codigoEscenario),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reglas, val, valCausado, params, periodo, hayCausado]);
+    [reglas, valEscenario, codigoEscenario, params, periodo],
+  );
+  const sufijo = escenario === 'causado' ? 'causado' : 'proyectado';
+  const csvEscenario = () =>
+    [COLUMNAS.join(';'), ...filasEscenario.map((f) => f.join(';'))].join('\n');
+
+  const copiarCsv = async () => {
+    try {
+      await navigator.clipboard.writeText(csvEscenario());
+      addToast('success', `Tabla ${sufijo} copiada como CSV (${filasEscenario.length} filas).`);
+    } catch {
+      addToast('error', 'No se pudo copiar al portapapeles.');
+    }
+  };
 
   const descargarArchivo = (contenido: string | ArrayBuffer, nombre: string, tipo: string) => {
     const blob = new Blob([contenido], { type: tipo });
@@ -101,27 +114,24 @@ export default function PestanaTablaSalida({
   };
 
   const descargarCsv = () => {
-    const header = COLUMNAS.join(';');
-    const lineas = filasAmbos.map((f) => f.join(';'));
-    const txt = [header, ...lineas].join('\n');
-    descargarArchivo(txt, `tabla_salida_${periodo}.csv`, 'text/csv;charset=utf-8');
-    addToast('success', `CSV descargado (${filasAmbos.length} filas, ${hayCausado ? 2 : 1} escenario${hayCausado ? 's' : ''}).`);
+    descargarArchivo(csvEscenario(), `tabla_salida_${sufijo}_${periodo}.csv`, 'text/csv;charset=utf-8');
+    addToast('success', `CSV ${sufijo} descargado (${filasEscenario.length} filas, Proyeccion = ${codigoEscenario}).`);
   };
 
   const descargarXlsx = async () => {
     try {
       const xlsx = await import('xlsx');
-      const ws = xlsx.utils.aoa_to_sheet([COLUMNAS as unknown as string[], ...filasAmbos]);
+      const ws = xlsx.utils.aoa_to_sheet([COLUMNAS as unknown as string[], ...filasEscenario]);
       ws['!cols'] = COLUMNAS.map(() => ({ wch: 16 }));
       const wb = xlsx.utils.book_new();
-      xlsx.utils.book_append_sheet(wb, ws, 'Tabla de salida');
+      xlsx.utils.book_append_sheet(wb, ws, escenario === 'causado' ? 'Causado' : 'Proyectado');
       const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
       descargarArchivo(
         wbout,
-        `tabla_salida_${periodo}.xlsx`,
+        `tabla_salida_${sufijo}_${periodo}.xlsx`,
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       );
-      addToast('success', `XLSX descargado (${filasAmbos.length} filas).`);
+      addToast('success', `XLSX ${sufijo} descargado (${filasEscenario.length} filas, Proyeccion = ${codigoEscenario}).`);
     } catch (err) {
       addToast('error', 'No se pudo generar el XLSX: ' + (err as Error).message);
     }
@@ -163,7 +173,7 @@ export default function PestanaTablaSalida({
         </span>
         <div className="ml-auto flex flex-wrap gap-2">
           <button
-            onClick={onCopiarCsv}
+            onClick={copiarCsv}
             className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
           >
             Copiar CSV
@@ -180,13 +190,23 @@ export default function PestanaTablaSalida({
           >
             Descargar XLSX
           </button>
-          {isAdmin && (
+          {isAdmin && escenario === 'proyeccion' && (
             <button
               onClick={onPublicar}
               disabled={publicando}
               className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
             >
               {publicando ? 'Publicando…' : 'Publicar a la base'}
+            </button>
+          )}
+          {isAdmin && escenario === 'causado' && (
+            <button
+              onClick={onPublicarCausado}
+              disabled={publicando || !hayCausado}
+              title="Anexa Proyeccion = 2 a v_proyeccion_final sin tocar el proyectado publicado"
+              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {publicando ? 'Publicando…' : 'Agregar causado a la tabla final'}
             </button>
           )}
         </div>
@@ -242,8 +262,8 @@ export default function PestanaTablaSalida({
         </table>
       </div>
       <p className="text-xs text-slate-500">
-        Montos en <b>signo crudo</b>: ingresos negativos, gastos positivos. El CSV y el XLSX incluyen
-        {hayCausado ? ' los dos escenarios en append.' : ' el escenario proyectado.'}
+        Montos en <b>signo crudo</b>: ingresos negativos, gastos positivos. Copiar, el CSV y el XLSX
+        llevan el escenario seleccionado ({sufijo}, Proyeccion = {codigoEscenario}).
       </p>
     </section>
   );
