@@ -12,7 +12,18 @@
  */
 
 import { supabase } from '@/lib/supabase';
-import type { Metodo, Parametro, Regla, GrupoPL, Base, Operacion, Paso, Causado } from './engine';
+import type {
+  Metodo,
+  Parametro,
+  Regla,
+  GrupoPL,
+  Base,
+  Operacion,
+  Paso,
+  Causado,
+  EscenarioRegla,
+  NivelRegla,
+} from './engine';
 import { PAIS } from './engine';
 import type { FilaHistoricoCuenta, FilaDimCuenta } from './capas';
 import {
@@ -49,6 +60,17 @@ export interface ReglaBase {
   cc: string;
   cuenta: string;
   tasaMensual: number | null;
+  /** Fila de `proyeccion_regla` y su versión (CP-38); ausentes en la semilla. */
+  id?: number;
+  rev?: number;
+  n?: number | null;
+  nombre?: string | null;
+  detalle?: string | null;
+  causado?: Causado;
+  escenarios?: EscenarioRegla;
+  nivel?: NivelRegla;
+  /** Borrado lógico guardado en la base (CP-31). */
+  eliminada?: boolean;
 }
 
 /** Estado inicial 100% desde la semilla (sin red). Reproduce la aceptación. */
@@ -85,7 +107,12 @@ export function ensamblarReglas(
       grupo: r.grupo,
       metodo: r.metodo,
       valor: r.valor,
-      n: null,
+      n: r.n ?? null,
+      nombre: r.nombre ?? null,
+      detalle: r.detalle ?? null,
+      causado: r.causado,
+      escenarios: r.escenarios,
+      nivel: r.nivel,
       combinada: r.combinada,
       cc: r.cc,
       cuenta: r.cuenta,
@@ -113,6 +140,8 @@ interface RowMetodo {
 interface RowRegla {
   periodo: string; empresa: string; concepto: string; grupo_pl: GrupoPL; combinada: string;
   centro_costo: string; cuenta_contable: string; metodo: string; valor: number | null; activa: boolean;
+  id?: number; rev?: number; n?: number | null; nombre?: string | null; detalle?: string | null;
+  causado?: Causado; escenarios?: EscenarioRegla; nivel?: NivelRegla; eliminada?: boolean;
 }
 interface RowHistorico {
   periodo: string; empresa: string; concepto: string; monto_usd: number; es_venta: boolean;
@@ -193,6 +222,15 @@ export async function cargarDesdeSupabase(
       cc: row.centro_costo,
       cuenta: row.cuenta_contable,
       tasaMensual: null,
+      id: row.id,
+      rev: row.rev ?? 0,
+      n: row.n ?? null,
+      nombre: row.nombre ?? null,
+      detalle: row.detalle ?? null,
+      causado: row.causado,
+      escenarios: row.escenarios,
+      nivel: row.nivel,
+      eliminada: row.eliminada ?? false,
     }));
     encontroAlgo = true;
   }
@@ -637,6 +675,10 @@ export interface CambiosRegla {
   destino?: unknown;
   formula_id?: number | null;
   activa?: boolean;
+  /** Cuenta de destino de la regla (Combinada = cuenta-centro-empresa). */
+  combinada?: string;
+  centro_costo?: string;
+  cuenta_contable?: string;
 }
 
 /**
@@ -1225,6 +1267,8 @@ export interface ResultadoPublicacion {
   motivo?: 'huerfanas' | 'error';
   /** Combinadas huérfanas reportadas por la función (CP-07). */
   huerfanas?: string[];
+  /** Aviso no bloqueante (p. ej. catálogo dim_cuenta vacío, no se validó). */
+  aviso?: string;
   mensaje?: string;
   error?: unknown;
 }

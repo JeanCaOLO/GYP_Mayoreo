@@ -46,6 +46,10 @@ export interface Override {
   detalle?: string | null;
   causado?: Causado;
   escenarios?: EscenarioRegla;
+  /** Cuenta de destino (Combinada = cuenta-centro-empresa). */
+  cuenta?: string;
+  cc?: string;
+  combinada?: string;
   borrada?: boolean;
 }
 
@@ -346,6 +350,9 @@ export default function PestanaReglas({
                           detalle: undefined,
                           causado: undefined,
                           escenarios: undefined,
+                          cuenta: undefined,
+                          cc: undefined,
+                          combinada: undefined,
                         });
                         setPanelKey(null);
                       }}

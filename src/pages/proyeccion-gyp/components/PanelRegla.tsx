@@ -64,6 +64,8 @@ interface Borrador {
   detalle: string;
   causado: Causado;
   escenarios: EscenarioRegla;
+  cuenta: string;
+  cc: string;
 }
 
 export interface PanelReglaProps {
@@ -116,6 +118,8 @@ export default function PanelRegla({
     detalle: regla.detalle ?? '',
     causado: regla.causado ?? 'igual',
     escenarios: regla.escenarios ?? 'AMBOS',
+    cuenta: regla.cuenta,
+    cc: regla.cc,
   });
   const [avanzado, setAvanzado] = useState(false);
 
@@ -133,6 +137,9 @@ export default function PanelRegla({
   );
 
   const guardar = () => {
+    const cuenta = b.cuenta.trim();
+    const cc = b.cc.trim();
+    const cambioDestino = cuenta !== regla.cuenta || cc !== regla.cc;
     onGuardar({
       metodo: b.metodo,
       valor: b.valor,
@@ -141,6 +148,10 @@ export default function PanelRegla({
       detalle: b.detalle.trim() || null,
       causado: b.causado,
       escenarios: b.escenarios,
+      // La Combinada se recompone con el mismo formato: cuenta-centro-empresa.
+      ...(cambioDestino &&
+        cuenta &&
+        cc && { cuenta, cc, combinada: `${cuenta}-${cc}-${regla.empresa}` }),
     });
   };
 
@@ -336,11 +347,29 @@ export default function PanelRegla({
                 ))}
               </select>
             </label>
+            <label className="flex flex-col gap-1 text-xs text-slate-500">
+              Cuenta contable de destino
+              <input
+                value={b.cuenta}
+                onChange={(e) => set('cuenta', e.target.value)}
+                className="rounded border border-slate-200 px-2 py-1.5 font-mono text-sm"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-slate-500">
+              Centro de costo de destino
+              <input
+                value={b.cc}
+                onChange={(e) => set('cc', e.target.value)}
+                className="rounded border border-slate-200 px-2 py-1.5 font-mono text-sm"
+              />
+            </label>
             <p className="text-[11px] text-slate-400 sm:col-span-2">
-              Elegir otra fórmula, armar fórmula propia y el destino/reparto por cuentas se editan
-              desde «Mis fórmulas» y «+ Agregar regla». La cuenta de destino de esta regla es{' '}
-              <span className="font-mono">{regla.cuenta}</span> · centro{' '}
-              <span className="font-mono">{regla.cc}</span>.
+              Combinada resultante:{' '}
+              <span className="font-mono">
+                {b.cuenta.trim()}-{b.cc.trim()}-{regla.empresa}
+              </span>
+              . Debe existir en el catálogo para publicar. Las fórmulas propias se editan en «Mis
+              fórmulas».
             </p>
           </div>
         )}

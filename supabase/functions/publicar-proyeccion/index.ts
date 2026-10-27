@@ -53,7 +53,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // RESPUESTA
 // ─────────────────────────────────────────────────────────────────────────────
-//   200 { ok: true, periodo, publicado: { "1": nInsertadas, "2": nInsertadas } }
+//   200 { ok: true, periodo, publicado: { "1": nInsertadas, "2": nInsertadas }, aviso? }
 //       (solo trae las llaves de los escenarios pedidos)
 //   200 { ok: false, motivo: "huerfanas", huerfanas: string[] }   // CP-07
 //   400 { ok: false, error }   // body inválido
@@ -228,7 +228,9 @@ serve(async (req: Request) => {
       return json({ ok: false, error: "'escenarios' debe incluir 1 y/o 2." }, 400);
     }
 
-    // Catálogo de Combinadas válidas (CP-07): del body o de dim_cuenta.
+    // Catálogo de Combinadas válidas (CP-07): del body o de dim_cuenta. Un
+    // catálogo VACÍO (Fabric aún no cargó dim_cuenta) no permite validar: se
+    // publica sin el chequeo y se avisa, en vez de marcar todo como huérfano.
     let catalogo: Set<string>;
     if (Array.isArray(body.dimCuenta)) {
       catalogo = new Set<string>(body.dimCuenta.map(String));
@@ -258,7 +260,7 @@ serve(async (req: Request) => {
         );
       }
       const fusionadas = fusionarPorCombinada(delEscenario);
-      const huerfanas = validarContraCatalogo(fusionadas, catalogo);
+      const huerfanas = catalogo.size > 0 ? validarContraCatalogo(fusionadas, catalogo) : [];
       for (const h of huerfanas) {
         if (!vistoHuerfana.has(h)) {
           vistoHuerfana.add(h);
@@ -296,7 +298,14 @@ serve(async (req: Request) => {
       publicado[String(esc.num)] = typeof data === "number" ? data : esc.filas.length;
     }
 
-    return json({ ok: true, periodo, publicado });
+    return json({
+      ok: true,
+      periodo,
+      publicado,
+      ...(catalogo.size === 0 && {
+        aviso: "dim_cuenta está vacía: se publicó sin validar las Combinadas contra el catálogo.",
+      }),
+    });
   } catch (err) {
     return json({ ok: false, error: String(err instanceof Error ? err.message : err) }, 500);
   }

@@ -19,6 +19,11 @@ import {
   refrescarDesdeFabric,
   guardarFactorMes,
   guardarMetodo,
+  actualizarRegla,
+  crearRegla,
+  eliminarRegla as eliminarReglaDb,
+  restaurarRegla as restaurarReglaDb,
+  type CambiosRegla,
   cargarProgramacion,
   guardarProgramacion,
   cargarUltimaPublicacion,
@@ -105,19 +110,23 @@ export default function ProyeccionGypPage() {
   const reglas = useMemo<Regla[]>(() => {
     const ensambladas = ensamblarReglas(data.reglasBase, data.series);
     const out: Regla[] = [];
-    ensambladas.forEach((r) => {
+    ensambladas.forEach((r, i) => {
       const o = overrides[kk(r.empresa, r.concepto)] || {};
-      if (o.borrada) return;
+      // Borrada en pantalla, o borrada en la base y no restaurada (CP-31).
+      if (o.borrada ?? data.reglasBase[i]?.eliminada) return;
       out.push({
         ...r,
         key: kk(r.empresa, r.concepto),
         metodo: o.metodo || r.metodo,
         valor: o.valor !== undefined ? o.valor : r.valor,
-        n: o.n ?? null,
-        nombre: o.nombre ?? null,
-        detalle: o.detalle ?? null,
-        causado: o.causado,
-        escenarios: o.escenarios,
+        n: o.n !== undefined ? o.n : r.n,
+        nombre: o.nombre !== undefined ? o.nombre : (r.nombre ?? null),
+        detalle: o.detalle !== undefined ? o.detalle : (r.detalle ?? null),
+        causado: o.causado ?? r.causado,
+        escenarios: o.escenarios ?? r.escenarios,
+        cuenta: o.cuenta ?? r.cuenta,
+        cc: o.cc ?? r.cc,
+        combinada: o.combinada ?? r.combinada,
       });
     });
     nuevas.forEach((x, i) => {
@@ -169,8 +178,13 @@ export default function ProyeccionGypPage() {
   // Reglas eliminadas (borrado lógico) para el pie con «Restaurar» (CP-31).
   const eliminadas = useMemo(() => {
     const base = ensamblarReglas(data.reglasBase, data.series);
-    return Object.keys(overrides)
-      .filter((k) => overrides[k]?.borrada)
+    const borradas = new Set(Object.keys(overrides).filter((k) => overrides[k]?.borrada));
+    // Las borradas en la base siguen en el pie hasta que se restauren.
+    data.reglasBase.forEach((r) => {
+      const k = kk(r.empresa, r.concepto);
+      if (r.eliminada && overrides[k]?.borrada !== false) borradas.add(k);
+    });
+    return [...borradas]
       .map((k) => {
         const r = base.find((x) => kk(x.empresa, x.concepto) === k);
         return {
@@ -315,16 +329,92 @@ export default function ProyeccionGypPage() {
     });
     return out as Partial<NuevaRegla>;
   };
+  // ── Persistencia de reglas (CP-37/38): cada cambio se escribe en
+  //    proyeccion_regla con bloqueo optimista por `rev`. Las reglas de la semilla
+  //    (sin `id`) solo cambian en pantalla. ──
+  const baseDe = (key: string) => data.reglasBase.find((r) => kk(r.empresa, r.concepto) === key);
+
+  const fijarRev = (id: number, rev: number | undefined) => {
+    if (rev === undefined) return;
+    setData((d) => ({ ...d, reglasBase: d.reglasBase.map((r) => (r.id === id ? { ...r, rev } : r)) }));
+    setNuevas((prev) => prev.map((x) => (x.id === id ? { ...x, rev } : x)));
+  };
+
+  const avisarEscritura = (r: { ok: boolean; motivo?: string }, que: string) => {
+    if (r.ok) return;
+    if (r.motivo === 'conflicto') {
+      addToast('error', `Otra persona cambió ${que} antes. Se recargaron las reglas; revisa y vuelve a guardar.`);
+      traer(false);
+    } else {
+      addToast('error', `No se pudo guardar ${que} en la base; el cambio queda solo en pantalla.`);
+    }
+  };
+
+  const persistirRegla = (id: number, rev: number, cambios: CambiosRegla, que: string) =>
+    actualizarRegla(id, rev, cambios).then((r) => {
+      avisarEscritura(r, que);
+      if (r.ok) fijarRev(id, r.rev);
+    });
+
+  /** Valores efectivos (base + override) de una regla, listos para la base. */
+  const efectivos = (b: ReglaBase, o: Override): CambiosRegla => ({
+    metodo: o.metodo ?? b.metodo,
+    valor: o.valor !== undefined ? o.valor : b.valor,
+    n: o.n !== undefined ? o.n : (b.n ?? null),
+    nombre: o.nombre !== undefined ? o.nombre : (b.nombre ?? null),
+    detalle: o.detalle !== undefined ? o.detalle : (b.detalle ?? null),
+    causado: o.causado ?? b.causado ?? 'igual',
+    escenarios: o.escenarios ?? b.escenarios ?? 'AMBOS',
+    combinada: o.combinada ?? b.combinada,
+    centro_costo: o.cc ?? b.cc,
+    cuenta_contable: o.cuenta ?? b.cuenta,
+  });
+
+  const guardarRegla = (key: string, cambios: Partial<Override>) => {
+    mod(key, cambios);
+    const que = 'la regla';
+    if (/^n\d+$/.test(key)) {
+      const x = nuevas[+key.slice(1)];
+      if (x?.id != null) {
+        const fusion = { ...x, ...limpiar(cambios) } as NuevaRegla;
+        persistirRegla(x.id, x.rev ?? 0, efectivos(fusion, {}), que);
+      }
+      return;
+    }
+    const b = baseDe(key);
+    if (b?.id == null) return;
+    const o: Override = { ...overrides[key] };
+    (Object.keys(cambios) as (keyof Override)[]).forEach((campo) => {
+      if (cambios[campo] === undefined) delete o[campo];
+      else (o as Record<string, unknown>)[campo] = cambios[campo];
+    });
+    persistirRegla(b.id, b.rev ?? 0, efectivos(b, o), que);
+  };
+
   const eliminarRegla = (key: string) => {
     if (/^n\d+$/.test(key)) {
       const i = +key.slice(1);
+      const x = nuevas[i];
       setNuevas((prev) => prev.filter((_, j) => j !== i));
+      if (x?.id != null) eliminarReglaDb(x.id, x.rev ?? 0).then((r) => avisarEscritura(r, 'la regla'));
     } else {
       setOverrides((prev) => ({ ...prev, [key]: { ...prev[key], borrada: true } }));
+      const b = baseDe(key);
+      if (b?.id != null)
+        eliminarReglaDb(b.id, b.rev ?? 0).then((r) => {
+          avisarEscritura(r, 'la regla');
+          if (r.ok) fijarRev(b.id!, r.rev);
+        });
     }
   };
   const restaurarRegla = (key: string) => {
     setOverrides((prev) => ({ ...prev, [key]: { ...prev[key], borrada: false } }));
+    const b = baseDe(key);
+    if (b?.id != null)
+      restaurarReglaDb(b.id, b.rev ?? 0).then((r) => {
+        avisarEscritura(r, 'la regla');
+        if (r.ok) fijarRev(b.id!, r.rev);
+      });
   };
 
   const restablecer = () => {
@@ -345,8 +435,37 @@ export default function ProyeccionGypPage() {
   // fórmulas». `metodosUser`/`metBorrados` se conservan para superponer y
   // restablecer el juego de métodos.
 
-  const crearNuevas = (nuevasReglas: NuevaRegla[]) =>
+  // Las reglas nuevas se crean también en la base (si hay datos de Supabase);
+  // así sobreviven a la recarga y la corrida programada las usa.
+  const crearNuevas = (nuevasReglas: NuevaRegla[]) => {
     setNuevas((prev) => [...prev, ...nuevasReglas]);
+    if (data.fuente !== 'db') return;
+    nuevasReglas.forEach((x) =>
+      crearRegla({
+        periodo: data.periodo,
+        empresa: x.empresa,
+        concepto: x.concepto,
+        grupo_pl: x.grupo,
+        combinada: x.combinada,
+        centro_costo: x.cc,
+        cuenta_contable: x.cuenta,
+        metodo: x.metodo,
+        valor: x.valor ?? null,
+        nombre: x.nombre ?? null,
+        detalle: x.detalle ?? null,
+        causado: x.causado,
+        escenarios: x.escenarios,
+        nivel: x.nivel,
+        n: x.n ?? null,
+      }).then((r) => {
+        if (r.ok && r.id != null) {
+          setNuevas((prev) => prev.map((y) => (y === x ? { ...y, id: r.id, rev: r.rev ?? 0 } : y)));
+        } else {
+          addToast('error', `No se pudo guardar en la base la regla nueva ${x.empresa} · ${x.concepto}.`);
+        }
+      }),
+    );
+  };
 
   // Editar un método del sistema desde «Mis fórmulas»: se aplica de inmediato al
   // cálculo (vía `metodosUser`) y se persiste en `proyeccion_metodo`.
@@ -466,6 +585,7 @@ export default function ProyeccionGypPage() {
             ? `Causado agregado a v_proyeccion_final: ${res.publicado?.['2'] ?? filas.length} filas con Proyeccion = 2.`
             : `Proyección publicada: ${filas.length} filas (proyectado + causado) en proyeccion_resultado.`,
         );
+        if (res.aviso) addToast('info', res.aviso);
       } else if (res.motivo === 'huerfanas') {
         addToast(
           'error',
@@ -611,7 +731,7 @@ export default function ProyeccionGypPage() {
           valCausado={causado.val}
           semiNeto={semiNeto}
           eliminadas={eliminadas}
-          onModRegla={mod}
+          onModRegla={guardarRegla}
           onEliminarRegla={eliminarRegla}
           onRestaurarRegla={restaurarRegla}
           onCrearNuevas={crearNuevas}

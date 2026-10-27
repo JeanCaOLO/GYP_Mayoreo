@@ -42,7 +42,8 @@
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
     "preview": "vite preview",
-    "type-check": "tsc --noEmit --project tsconfig.app.json"
+    "type-check": "tsc --noEmit --project tsconfig.app.json",
+    "bundle:corrida": "rolldown supabase/functions/corrida-programada/index.ts --format esm --platform neutral --external \"https://*\" -o supabase/dashboard/corrida-programada.ts"
   },
   "type": "module",
   "version": "0.0.0"

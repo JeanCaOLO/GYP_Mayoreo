@@ -599,7 +599,8 @@ serve(async (req: Request) => {
       catalogo = new Set(dimCuenta);
     } else {
       const { data: dc } = await db.from("dim_cuenta").select("combinada");
-      if (dc) catalogo = new Set(dc.map((r: { combinada: string }) => r.combinada));
+      // Catálogo vacío = aún no cargado por Fabric: no hay contra qué validar.
+      if (dc && dc.length) catalogo = new Set(dc.map((r: { combinada: string }) => r.combinada));
     }
 
     const items = checklistMinimo(filas, periodo, catalogo);
