@@ -371,6 +371,15 @@ function calcularEscenarios(opts) {
 }
 //#endregion
 //#region src/pages/proyeccion-gyp/salida.ts
+/** Empresas cuya `Tasa_Mensual` SÍ se puebla en la tabla final (CP-05). */
+const EMPRESAS_CON_TASA = /* @__PURE__ */ new Set(["Cofersa", "Mundial"]);
+/**
+* ¿Esta empresa lleva `Tasa_Mensual` en la tabla final? Solo Cofersa y Mundial;
+* las venezolanas la dejan NULL porque el mayor ya trae su local.
+*/
+function llevaTasaMensual(empresa) {
+	return EMPRESAS_CON_TASA.has(empresa);
+}
 /**
 * `FECHA` = día 1 del periodo, en formato `aaaa-mm-01` (CP-04). El periodo llega
 * como `aaaa-mm` o `aaaa-mm-dd`; en ambos casos la fecha de salida se fija al día 1.
@@ -386,7 +395,7 @@ function fechaDia1(periodo) {
 * `causado.val[i]` para el escenario 2 (Causado, `proyeccion=2`), alineados por
 * índice con `reglas`. `Monto_Local = Monto_USD × tasa` de la empresa, `FECHA` =
 * día 1 (CP-04), `Vista='GYP'`, `Ajuste`/`Ajuste_USD`=0, país del mapa propio
-* (CP-52), `Tasa_Mensual` tal como viene en la regla (CP-05).
+* (CP-52), `Tasa_Mensual` solo en Cofersa/Mundial con la tasa del mes (CP-05).
 *
 * FUENTE ÚNICA: la usan tanto la publicación manual (`page.tsx`) como la corrida
 * programada server-side (`supabase/functions/_shared/motor.ts`), para que ambas
@@ -412,7 +421,7 @@ function construirFilasEscenarios(periodo, insumos) {
 		combinada: r.combinada,
 		pais: r.pais || PAIS[r.empresa] || r.empresa,
 		empresa: r.empresa,
-		tasa_mensual: r.tasaMensual,
+		tasa_mensual: llevaTasaMensual(r.empresa) ? r.tasaMensual ?? params[r.empresa]?.tasa ?? null : null,
 		ajuste: 0,
 		ajuste_usd: 0,
 		monto_local: monto * (params[r.empresa]?.tasa || 0),
@@ -777,34 +786,16 @@ async function tocaAhora(db, prog, zona) {
 	};
 }
 /**
-* Llama a la Edge Function que consulta Fabric y escribe histórico y parámetros
-* en Supabase. `escrito` = hubo datos nuevos; `sinCambios` = una guarda frenó la
-* escritura (409, p. ej. el corte no avanzó): no es un fallo.
+* Cuántas filas dejó Fabric en `gyp_historico_mensual` para el periodo. La
+* corrida NO consulta Fabric: recalcula con lo último que Fabric escribió.
 */
-async function extraerDeFabric(supabaseUrl, serviceKey, periodo) {
-	const resp = await fetch(`${supabaseUrl}/functions/v1/refrescar-proyeccion-fabric`, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			Authorization: `Bearer ${serviceKey}`,
-			apikey: serviceKey
-		},
-		body: JSON.stringify({ periodo })
-	});
-	const cuerpo = await resp.json().catch(() => null);
-	if (resp.ok && cuerpo?.escrito) return {
-		escrito: true,
-		sinCambios: false,
-		corte: cuerpo.corte ?? null,
-		mensaje: `Fabric extraído: ${cuerpo.conceptos ?? "—"} conceptos, corte ${cuerpo.corte ?? "—"}.`
-	};
-	if (resp.status === 409) return {
-		escrito: false,
-		sinCambios: true,
-		corte: null,
-		mensaje: `Fabric sin datos nuevos: ${cuerpo?.errores && cuerpo.errores[0] || "guardas no superadas"}`
-	};
-	throw new Error((cuerpo && (cuerpo.error || cuerpo.mensaje)) ?? `refrescar-proyeccion-fabric respondió ${resp.status}`);
+async function filasHistoricoDelMes(db, periodo) {
+	const { count, error } = await db.from("gyp_historico_mensual").select("periodo", {
+		count: "exact",
+		head: true
+	}).eq("periodo", periodo);
+	if (error) throw new Error(`No se pudo leer gyp_historico_mensual: ${error.message}`);
+	return count ?? 0;
 }
 /**
 * Determina si los datos del mes están "frescos" para publicar. Lee el `corte`
@@ -883,7 +874,17 @@ function checklistMinimo(filas, periodo, dimCuenta) {
 		nombre: "Tasa_Mensual solo Cofersa/Mundial",
 		bloqueante: true,
 		ok: tasaMala.length === 0,
-		detalle: tasaMala.length ? `${tasaMala.length} fila(s) con Tasa_Mensual en la empresa equivocada.` : void 0
+		detalle: tasaMala.length ? (() => {
+			const faltan = tasaMala.filter((f) => conTasa.has(f.empresa));
+			const sobran = tasaMala.length - faltan.length;
+			const partes = [];
+			if (faltan.length) {
+				const emps = [...new Set(faltan.map((f) => f.empresa))].join(", ");
+				partes.push(`${faltan.length} fila(s) de ${emps} sin Tasa_Mensual`);
+			}
+			if (sobran) partes.push(`${sobran} fila(s) venezolanas con Tasa_Mensual`);
+			return partes.join("; ") + ".";
+		})() : void 0
 	});
 	const porEscenario = /* @__PURE__ */ new Map();
 	const repetidas = [];
@@ -1013,21 +1014,20 @@ serve(async (req) => {
 				log
 			});
 		}
-		if (body.sinExtraccion !== true) {
-			const idExt = await abrirCorrida(db, periodo, "extraccion", "en_curso");
-			try {
-				const ext = await extraerDeFabric(supabaseUrl, serviceKey, periodo);
-				log.push(ext.mensaje);
-				await cerrarCorrida(db, idExt, ext.escrito ? "ok" : "omitida", {
-					mensaje: ext.mensaje,
-					corte: ext.corte
-				});
-			} catch (errExt) {
-				const msg = "extracción de Fabric falló: " + String(errExt instanceof Error ? errExt.message : errExt) + ". Se recalcula con los últimos datos de Supabase.";
-				log.push(msg);
-				await cerrarCorrida(db, idExt, "error", { mensaje: msg });
-			}
+		const filasMes = await filasHistoricoDelMes(db, periodo);
+		if (filasMes === 0) {
+			const msg = `gyp_historico_mensual no tiene datos de ${periodo}: Fabric aún no escribió el mes. Se conserva lo publicado.`;
+			log.push(msg);
+			await abrirCorrida(db, periodo, "calculo", "omitida", { mensaje: msg });
+			return json({
+				ok: true,
+				ejecutada: false,
+				motivo: "sin_datos",
+				periodo,
+				log
+			});
 		}
+		log.push(`datos de Fabric en gyp_historico_mensual: ${filasMes} filas de ${periodo}.`);
 		const forzar = body.forzar === true;
 		let corteExtraccion = null;
 		if (prog.exige_datos_frescos && !forzar) {

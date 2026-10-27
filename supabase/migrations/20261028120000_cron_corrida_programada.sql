@@ -3,8 +3,9 @@
 -- ----------------------------------------------------------------------------
 -- pg_cron llama a la Edge Function `corrida-programada` CADA 5 MINUTOS. La
 -- función lee `proyeccion_programacion` (activa, frecuencia, hora_local en
--- Caracas) y solo corre cuando toca: consulta Fabric, recalcula proyectado y
--- causado, y publica en proyeccion_resultado → v_proyeccion_final. Cambiar el
+-- Caracas) y solo corre cuando toca: con los datos que Fabric dejó en
+-- gyp_historico_mensual recalcula proyectado y causado, y publica en
+-- proyeccion_resultado → v_proyeccion_final. Cambiar el
 -- horario en la pantalla rige sin tocar este job.
 --
 -- ANTES DE CORRERLO: guardar en Vault la service_role key del proyecto
@@ -42,7 +43,7 @@ select cron.schedule(
                                                    where name = 'gyp_cron_key')
                  ),
       body    := '{}'::jsonb,
-      -- La extracción de Fabric + recálculo + publicación puede tardar minutos.
+      -- Recálculo + publicación puede tardar; margen amplio.
       timeout_milliseconds := 300000
     );
   $job$

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useToast } from '@/contexts/ToastContext';
 import type { Regla, Parametro } from '../engine';
 import { fmt } from './formato';
+import { llevaTasaMensual } from '../salida';
 
 /**
  * Pestaña 4 · Tabla de salida.
@@ -64,6 +65,10 @@ export default function PestanaTablaSalida({
   const valEscenario = escenario === 'causado' && hayCausado ? valCausado! : val;
   const codigoEscenario = escenario === 'causado' ? 2 : 1;
 
+  /** Tasa_Mensual del contrato (CP-05): solo Cofersa/Mundial, con la tasa del mes. */
+  const tasaMensualDe = (r: Regla): number | null =>
+    llevaTasaMensual(r.empresa) ? (r.tasaMensual ?? params[r.empresa]?.tasa ?? null) : null;
+
   /** Construye las filas de salida de un escenario (array de arrays). */
   const filasDe = (vals: number[], codigo: number): (string | number)[][] =>
     reglas.map((r, i) => [
@@ -73,7 +78,7 @@ export default function PestanaTablaSalida({
       r.combinada,
       r.pais,
       r.empresa,
-      r.tasaMensual == null ? '' : r.tasaMensual,
+      tasaMensualDe(r) ?? '',
       0,
       Number((vals[i] * (params[r.empresa]?.tasa || 0)).toFixed(2)),
       Number(vals[i].toFixed(2)),
@@ -241,10 +246,10 @@ export default function PestanaTablaSalida({
                 <td className="px-3 py-2">{r.pais}</td>
                 <td className="px-3 py-2">{r.empresa}</td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {r.tasaMensual == null ? (
+                  {tasaMensualDe(r) == null ? (
                     <span className="text-slate-400">nulo</span>
                   ) : (
-                    fmt(r.tasaMensual, 4)
+                    fmt(tasaMensualDe(r)!, 4)
                   )}
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums">

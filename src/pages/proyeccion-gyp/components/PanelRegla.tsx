@@ -70,6 +70,14 @@ interface Borrador {
   cc: string;
 }
 
+/** Resultado de recalcular con el borrador de la regla («Así quedaría»). */
+export interface SimulacionRegla {
+  proy: number;
+  caus: number;
+  snProy: number;
+  snCaus: number;
+}
+
 export interface PanelReglaProps {
   regla: Regla;
   /** Monto proyectado actual de la regla (val[i]). */
@@ -87,6 +95,8 @@ export interface PanelReglaProps {
   serieVenta?: number[];
   /** Crea un método nuevo («+ Crear otra forma») y lo deja disponible para todas. */
   onCrearMetodo?: (m: Metodo) => void;
+  /** Recalcula con el borrador sin guardar; sin él, «Así quedaría» muestra lo actual. */
+  simular?: (cambios: Partial<Override>) => SimulacionRegla | null;
   onGuardar: (cambios: Partial<Override>) => void;
   onCancelar: () => void;
   onOtraRegla: () => void;
@@ -111,6 +121,7 @@ export default function PanelRegla({
   serieConcepto,
   serieVenta,
   onCrearMetodo,
+  simular,
   onGuardar,
   onCancelar,
   onOtraRegla,
@@ -151,11 +162,12 @@ export default function PanelRegla({
     return metodosList.filter((mm) => !mm.fijo || !OPS_CON_TARJETA.includes(mm.op));
   }, [metodosList, rec.errores.length]);
 
-  const guardar = () => {
+  // Cambios del borrador: los usan «Así quedaría» (sin guardar) y Guardar.
+  const cambios = useMemo<Partial<Override>>(() => {
     const cuenta = b.cuenta.trim();
     const cc = b.cc.trim();
     const cambioDestino = cuenta !== regla.cuenta || cc !== regla.cc;
-    onGuardar({
+    return {
       metodo: b.metodo,
       valor: b.valor,
       n: b.n,
@@ -167,8 +179,18 @@ export default function PanelRegla({
       ...(cambioDestino &&
         cuenta &&
         cc && { cuenta, cc, combinada: `${cuenta}-${cc}-${regla.empresa}` }),
-    });
-  };
+    };
+  }, [b, regla.cuenta, regla.cc, regla.empresa]);
+
+  // «Así quedaría» (CP-26): se recalcula cada vez que cambia la selección.
+  const sim = useMemo(() => simular?.(cambios) ?? null, [simular, cambios]);
+  const hayCambio =
+    !!sim &&
+    [sim.proy - valProyeccion, sim.caus - valCausado, sim.snProy - semiNetoProy, sim.snCaus - semiNetoCaus].some(
+      (d) => Math.abs(d) >= 0.005,
+    );
+
+  const guardar = () => onGuardar(cambios);
 
   return (
     <div className="space-y-4 rounded-lg border border-emerald-300 bg-white p-4">
@@ -382,14 +404,15 @@ export default function PanelRegla({
           Así quedaría
         </p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-4">
-          <AsiCelda etiqueta="Proyectado" valor={valProyeccion} />
-          <AsiCelda etiqueta="Causado" valor={valCausado} />
-          <AsiCelda etiqueta="Semi Neto (proy.)" valor={semiNetoProy} />
-          <AsiCelda etiqueta="Semi Neto (caus.)" valor={semiNetoCaus} />
+          <AsiCelda etiqueta="Proyectado" valor={sim?.proy ?? valProyeccion} hoy={valProyeccion} />
+          <AsiCelda etiqueta="Causado" valor={sim?.caus ?? valCausado} hoy={valCausado} />
+          <AsiCelda etiqueta="Semi Neto (proy.)" valor={sim?.snProy ?? semiNetoProy} hoy={semiNetoProy} />
+          <AsiCelda etiqueta="Semi Neto (caus.)" valor={sim?.snCaus ?? semiNetoCaus} hoy={semiNetoCaus} />
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
-          La cifra firme se recalcula al Guardar; el impacto exacto sobre el Semi Neto se ve en
-          Resultado.
+          {hayCambio
+            ? 'Con lo seleccionado, sin guardar todavía. Se aplica al pulsar Guardar.'
+            : 'Así está hoy. Cambia la forma de estimar o los parámetros para ver el impacto.'}
         </p>
       </div>
 
@@ -502,11 +525,22 @@ export default function PanelRegla({
 // Subcomponentes
 // ─────────────────────────────────────────────────────────────────────────────
 
-function AsiCelda({ etiqueta, valor }: { etiqueta: string; valor: number }) {
+function AsiCelda({ etiqueta, valor, hoy }: { etiqueta: string; valor: number; hoy: number }) {
+  const dif = valor - hoy;
+  const cambia = Math.abs(dif) >= 0.005;
   return (
     <div>
       <p className="text-[11px] text-slate-500">{etiqueta}</p>
       <p className="font-mono text-sm font-semibold tabular-nums text-slate-800">{fmt(valor)}</p>
+      {cambia && (
+        <p className="font-mono text-[11px] tabular-nums text-slate-500">
+          hoy {fmt(hoy)} ·{' '}
+          <span className="font-semibold text-slate-700">
+            {dif > 0 ? '+' : ''}
+            {fmt(dif)}
+          </span>
+        </p>
+      )}
     </div>
   );
 }

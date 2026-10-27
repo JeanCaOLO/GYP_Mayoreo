@@ -1276,9 +1276,10 @@ export interface ResultadoCorrida {
 }
 
 /**
- * Corre YA la actualización programada (botón «Ejecutar ahora»): consulta
- * Fabric, recalcula los dos escenarios y publica en v_proyeccion_final, sin
- * esperar a la hora configurada. Queda en la bitácora con origen 'manual'.
+ * Corre YA la actualización programada (botón «Ejecutar ahora»): con los datos
+ * que Fabric dejó en gyp_historico_mensual recalcula los dos escenarios y
+ * publica en v_proyeccion_final, sin esperar a la hora configurada. Queda en la
+ * bitácora con lanzada_por 'manual'.
  */
 export async function ejecutarCorridaAhora(periodo?: string): Promise<ResultadoCorrida> {
   const { data, error } = await supabase.functions.invoke('corrida-programada', {

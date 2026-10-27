@@ -175,6 +175,29 @@ export default function ProyeccionGypPage() {
     return out;
   }, [proyeccion.agg, causado.agg]);
 
+  // «Así quedaría» (CP-26): corre el motor completo con UNA regla cambiada según
+  // el borrador del panel, sin guardar nada. Así el impacto incluye lo que
+  // arrastra la regla (Renta Bruta, Semi Neto, % sobre otros conceptos).
+  const simularRegla = useCallback(
+    (key: string, cambios: Partial<Override>) => {
+      const definidos = Object.fromEntries(
+        Object.entries(cambios).filter(([, v]) => v !== undefined),
+      ) as Partial<Regla>;
+      const rs = reglas.map((r) => (r.key === key ? { ...r, ...definidos } : r));
+      const i = rs.findIndex((r) => r.key === key);
+      if (i < 0) return null;
+      const esc = calcularEscenarios({ reglas: rs, metodos, params, empresas: EMPRESAS, gn });
+      const emp = rs[i].empresa;
+      return {
+        proy: esc.proyeccion.val[i] ?? 0,
+        caus: esc.causado.val[i] ?? 0,
+        snProy: esc.proyeccion.agg[emp]?.sn ?? 0,
+        snCaus: esc.causado.agg[emp]?.sn ?? 0,
+      };
+    },
+    [reglas, metodos, params, gn],
+  );
+
   // Reglas eliminadas (borrado lógico) para el pie con «Restaurar» (CP-31).
   const eliminadas = useMemo(() => {
     const base = ensamblarReglas(data.reglasBase, data.series);
@@ -749,6 +772,7 @@ export default function ProyeccionGypPage() {
           eliminadas={eliminadas}
           onModRegla={guardarRegla}
           onCrearMetodo={editarMetodo}
+          onSimular={simularRegla}
           onEliminarRegla={eliminarRegla}
           onRestaurarRegla={restaurarRegla}
           onCrearNuevas={crearNuevas}

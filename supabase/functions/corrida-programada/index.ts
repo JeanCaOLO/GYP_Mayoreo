@@ -23,10 +23,9 @@
 //      hoy toca según la frecuencia, ya pasó la `hora_local` en Caracas y aún
 //      no hubo corrida programada desde esa hora. Así un cambio de horario en
 //      la pantalla rige sin reprogramar el cron. `{"manual": true}` lo salta.
-//   0b. PASO `extraccion`: consulta Fabric vía la Edge Function
-//      `refrescar-proyeccion-fabric`, que escribe histórico y parámetros en
-//      Supabase. Un 409 (el corte no avanzó) no es error: se sigue con lo que
-//      ya hay. Un fallo se registra y decide la guardia de datos frescos.
+//   0b. DATOS DE FABRIC: NO se consulta Fabric. Fabric escribe por su cuenta
+//      en `gyp_historico_mensual` (y el corte en `proyeccion_parametro`); la
+//      corrida usa lo último que haya allí. Sin filas del mes no publica.
 //   1. GUARDIA DE SOLAPAMIENTO (CP-56 #6 / R-27.7): si hay una corrida `en_curso`
 //      para el periodo, la nueva se marca `omitida` y termina.
 //   2. GUARDIA DE DATOS FRESCOS (CP-56 #4 / R-27.6): si `exige_datos_frescos` y la
@@ -82,9 +81,8 @@
 //     "dimCuenta": string[],        // opcional. Se reenvía a publicar-proyeccion.
 //     "forzar":   false,            // opcional. Si true, salta el guardia de
 //                                   //   datos frescos aun con exige_datos_frescos.
-//     "manual":   false,            // opcional. Si true, corre ya sin mirar el
+//     "manual":   false             // opcional. Si true, corre ya sin mirar el
 //                                   //   horario (y aunque esté pausada).
-//     "sinExtraccion": false        // opcional. Si true, no consulta Fabric.
 //   }
 //
 // Credenciales fuera del navegador (R-NN-5): SUPABASE_URL y
@@ -334,45 +332,20 @@ async function tocaAhora(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Extracción: consulta Fabric vía refrescar-proyeccion-fabric
+// Datos de Fabric ya escritos en Supabase
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Llama a la Edge Function que consulta Fabric y escribe histórico y parámetros
- * en Supabase. `escrito` = hubo datos nuevos; `sinCambios` = una guarda frenó la
- * escritura (409, p. ej. el corte no avanzó): no es un fallo.
+ * Cuántas filas dejó Fabric en `gyp_historico_mensual` para el periodo. La
+ * corrida NO consulta Fabric: recalcula con lo último que Fabric escribió.
  */
-async function extraerDeFabric(
-  supabaseUrl: string,
-  serviceKey: string,
-  periodo: string,
-): Promise<{ escrito: boolean; sinCambios: boolean; corte: string | null; mensaje: string }> {
-  const resp = await fetch(`${supabaseUrl}/functions/v1/refrescar-proyeccion-fabric`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${serviceKey}`,
-      apikey: serviceKey,
-    },
-    body: JSON.stringify({ periodo }),
-  });
-  const cuerpo = await resp.json().catch(() => null);
-  if (resp.ok && cuerpo?.escrito) {
-    return {
-      escrito: true,
-      sinCambios: false,
-      corte: cuerpo.corte ?? null,
-      mensaje: `Fabric extraído: ${cuerpo.conceptos ?? "—"} conceptos, corte ${cuerpo.corte ?? "—"}.`,
-    };
-  }
-  if (resp.status === 409) {
-    const motivo = (cuerpo?.errores && cuerpo.errores[0]) || "guardas no superadas";
-    return { escrito: false, sinCambios: true, corte: null, mensaje: `Fabric sin datos nuevos: ${motivo}` };
-  }
-  throw new Error(
-    (cuerpo && (cuerpo.error || cuerpo.mensaje)) ??
-      `refrescar-proyeccion-fabric respondió ${resp.status}`,
-  );
+async function filasHistoricoDelMes(db: SupabaseClient, periodo: string): Promise<number> {
+  const { count, error } = await db
+    .from("gyp_historico_mensual")
+    .select("periodo", { count: "exact", head: true })
+    .eq("periodo", periodo);
+  if (error) throw new Error(`No se pudo leer gyp_historico_mensual: ${error.message}`);
+  return count ?? 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -503,7 +476,17 @@ function checklistMinimo(
     bloqueante: true,
     ok: tasaMala.length === 0,
     detalle: tasaMala.length
-      ? `${tasaMala.length} fila(s) con Tasa_Mensual en la empresa equivocada.`
+      ? (() => {
+          const faltan = tasaMala.filter((f) => conTasa.has(f.empresa));
+          const sobran = tasaMala.length - faltan.length;
+          const partes: string[] = [];
+          if (faltan.length) {
+            const emps = [...new Set(faltan.map((f) => f.empresa))].join(", ");
+            partes.push(`${faltan.length} fila(s) de ${emps} sin Tasa_Mensual`);
+          }
+          if (sobran) partes.push(`${sobran} fila(s) venezolanas con Tasa_Mensual`);
+          return partes.join("; ") + ".";
+        })()
       : undefined,
   });
 
@@ -678,26 +661,16 @@ serve(async (req: Request) => {
       return json({ ok: true, ejecutada: false, motivo: "solapamiento", periodo, log });
     }
 
-    // 1b. PASO EXTRACCIÓN: consultar Fabric y escribir en Supabase antes de
-    // recalcular. Si falla, se registra y la guardia de datos frescos decide.
-    if (body.sinExtraccion !== true) {
-      const idExt = await abrirCorrida(db, periodo, "extraccion", "en_curso");
-      try {
-        const ext = await extraerDeFabric(supabaseUrl, serviceKey, periodo);
-        log.push(ext.mensaje);
-        await cerrarCorrida(db, idExt, ext.escrito ? "ok" : "omitida", {
-          mensaje: ext.mensaje,
-          corte: ext.corte,
-        });
-      } catch (errExt) {
-        const msg =
-          "extracción de Fabric falló: " +
-          String(errExt instanceof Error ? errExt.message : errExt) +
-          ". Se recalcula con los últimos datos de Supabase.";
-        log.push(msg);
-        await cerrarCorrida(db, idExt, "error", { mensaje: msg });
-      }
+    // 1b. DATOS DE FABRIC: se usan los que Fabric ya escribió en
+    // gyp_historico_mensual. Sin filas del mes no se recalcula ni se publica.
+    const filasMes = await filasHistoricoDelMes(db, periodo);
+    if (filasMes === 0) {
+      const msg = `gyp_historico_mensual no tiene datos de ${periodo}: Fabric aún no escribió el mes. Se conserva lo publicado.`;
+      log.push(msg);
+      await abrirCorrida(db, periodo, "calculo", "omitida", { mensaje: msg });
+      return json({ ok: true, ejecutada: false, motivo: "sin_datos", periodo, log });
     }
+    log.push(`datos de Fabric en gyp_historico_mensual: ${filasMes} filas de ${periodo}.`);
 
     // 2. GUARDIA DE DATOS FRESCOS (CP-56 #4 / R-27.6).
     const forzar = body.forzar === true;

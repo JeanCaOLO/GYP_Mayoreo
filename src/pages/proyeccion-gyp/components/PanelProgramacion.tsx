@@ -192,9 +192,9 @@ export default function PanelProgramacion({
   const [ejecutando, setEjecutando] = useState(false);
   const [bitacora, setBitacora] = useState<string[] | null>(null);
 
-  // Corre la cadena completa ya: Fabric → recálculo → v_proyeccion_final.
+  // Corre la cadena completa ya: datos de Fabric en Supabase → recálculo → v_proyeccion_final.
   const ejecutarAhora = async () => {
-    if (!window.confirm('¿Consultar Fabric, recalcular y publicar proyectado y causado ahora?')) return;
+    if (!window.confirm('¿Recalcular con los últimos datos de Fabric y publicar proyectado y causado ahora?')) return;
     setEjecutando(true);
     setBitacora(null);
     try {
@@ -218,9 +218,10 @@ export default function PanelProgramacion({
       <div>
         <h2 className="text-base font-semibold text-slate-900">Cuándo se actualiza solo</h2>
         <p className="text-sm text-slate-500">
-          A la <b>hora de publicación, en hora de Caracas</b>, el servidor consulta Fabric, escribe
-          los datos en Supabase, recalcula las reglas de los dos escenarios y publica proyectado y
-          causado en <span className="font-mono">v_proyeccion_final</span>. Revisa cada 5 minutos si
+          A la <b>hora de publicación, en hora de Caracas</b>, el servidor toma los últimos datos que
+          Fabric escribió en <span className="font-mono">gyp_historico_mensual</span>, recalcula las
+          reglas de los dos escenarios y publica proyectado y causado en{' '}
+          <span className="font-mono">v_proyeccion_final</span>. Revisa cada 5 minutos si
           ya toca, así que publica a lo sumo 5 minutos después de la hora elegida.
         </p>
       </div>

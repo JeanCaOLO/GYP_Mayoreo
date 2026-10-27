@@ -9,7 +9,7 @@ import {
 import type { ReglaBase } from '../data';
 import { trazaRegla, type Traza } from './traza';
 import { fmt } from './formato';
-import PanelRegla from './PanelRegla';
+import PanelRegla, { type SimulacionRegla } from './PanelRegla';
 import PanelAgregarRegla from './PanelAgregarRegla';
 import {
   BLOQUES_PL,
@@ -88,6 +88,8 @@ export interface PestanaReglasProps {
   onModRegla: (key: string, cambios: Partial<Override>) => void;
   /** Crea (o guarda) un método nuevo desde el panel de una regla. */
   onCrearMetodo?: (m: Metodo) => void;
+  /** Recalcula con el borrador de una regla, sin guardar («Así quedaría»). */
+  onSimular?: (key: string, cambios: Partial<Override>) => SimulacionRegla | null;
   onEliminarRegla: (key: string) => void;
   onRestaurarRegla: (key: string) => void;
   onCrearNuevas: (reglas: NuevaRegla[]) => void;
@@ -118,6 +120,7 @@ export default function PestanaReglas({
   cuentasFueraCatalogo,
   onModRegla,
   onCrearMetodo,
+  onSimular,
   onEliminarRegla,
   onRestaurarRegla,
   onCrearNuevas,
@@ -332,6 +335,7 @@ export default function PestanaReglas({
                       serieConcepto={(reglas[i].serie ?? []).filter((x) => !Number.isNaN(x))}
                       serieVenta={serieVentaDe(empresa)}
                       onCrearMetodo={onCrearMetodo}
+                      simular={onSimular ? (c) => onSimular(key, c) : undefined}
                       onGuardar={(cambios) => {
                         onModRegla(key, cambios);
                         setPanelKey(null);

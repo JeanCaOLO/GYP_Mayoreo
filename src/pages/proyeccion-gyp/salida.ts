@@ -316,7 +316,7 @@ export interface InsumosPublicacion {
  * `causado.val[i]` para el escenario 2 (Causado, `proyeccion=2`), alineados por
  * índice con `reglas`. `Monto_Local = Monto_USD × tasa` de la empresa, `FECHA` =
  * día 1 (CP-04), `Vista='GYP'`, `Ajuste`/`Ajuste_USD`=0, país del mapa propio
- * (CP-52), `Tasa_Mensual` tal como viene en la regla (CP-05).
+ * (CP-52), `Tasa_Mensual` solo en Cofersa/Mundial con la tasa del mes (CP-05).
  *
  * FUENTE ÚNICA: la usan tanto la publicación manual (`page.tsx`) como la corrida
  * programada server-side (`supabase/functions/_shared/motor.ts`), para que ambas
@@ -345,7 +345,11 @@ export function construirFilasEscenarios(
     combinada: r.combinada,
     pais: r.pais || PAIS[r.empresa] || r.empresa,
     empresa: r.empresa,
-    tasa_mensual: r.tasaMensual,
+    // CP-05: solo Cofersa/Mundial, con la tasa del mes. Las reglas leídas de la
+    // base llegan sin tasa propia; se completa con la de `proyeccion_parametro`.
+    tasa_mensual: llevaTasaMensual(r.empresa)
+      ? (r.tasaMensual ?? params[r.empresa]?.tasa ?? null)
+      : null,
     ajuste: 0,
     ajuste_usd: 0,
     monto_local: monto * (params[r.empresa]?.tasa || 0),
