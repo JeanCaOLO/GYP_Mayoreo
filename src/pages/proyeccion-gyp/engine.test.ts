@@ -41,6 +41,7 @@ import {
   type Metodo,
   type Parametro,
 } from './engine';
+import { construirFilasEscenarios } from './salida';
 import {
   REGLAS_SEED,
   METODOS_BASE,
@@ -378,4 +379,43 @@ describe('Semi Neto al 19-oct — pendiente (foto del 19-oct no disponible en el
   // Parametrización de octubre, datos al 19-oct (CP-43 / Req 28.5):
   it.todo('Semi Neto proyectado al cierre (parametrización oct-2026, 19-oct) = 486 541 — faltan foto del 19-oct y parametrización');
   it.todo('Semi Neto causado al corte (parametrización oct-2026, 19-oct) = 211 168 — faltan foto del 19-oct y parametrización');
+});
+
+// -----------------------------------------------------------------------------
+// Fuente ÚNICA de publicación: construirFilasEscenarios (FALLO 1 / CP-49)
+// -----------------------------------------------------------------------------
+// La publicación manual (page.tsx) y la corrida programada server-side
+// (_shared/motor.ts) comparten esta función. Debe producir los DOS escenarios
+// con los mismos montos que calcularEscenarios, para que la tabla final nunca
+// se quede con un solo escenario (la causa del FALLO 1).
+describe('construirFilasEscenarios — los dos escenarios (CP-49 / FALLO 1)', () => {
+  const insumos = { reglas, metodos, params, empresas: EMPRESAS, gn: GN };
+  const filas = construirFilasEscenarios('2026-10', insumos);
+  const esc1 = filas.filter((f) => f.proyeccion === 1);
+  const esc2 = filas.filter((f) => f.proyeccion === 2);
+
+  it('produce 95 filas por escenario = 190 filas (ambos escenarios presentes)', () => {
+    expect(filas.length).toBe(190);
+    expect(esc1.length).toBe(95);
+    expect(esc2.length).toBe(95);
+  });
+
+  it('el escenario 1 (Proyectado) coincide con calcularEscenarios().proyeccion.val', () => {
+    const esc = calcularEscenarios({ reglas, metodos, params, empresas: [...EMPRESAS], gn: GN });
+    esc1.forEach((f, i) => expect(f.monto_usd).toBeCloseTo(esc.proyeccion.val[i], 2));
+  });
+
+  it('el escenario 2 (Causado) coincide con calcularEscenarios().causado.val', () => {
+    const esc = calcularEscenarios({ reglas, metodos, params, empresas: [...EMPRESAS], gn: GN });
+    esc2.forEach((f, i) => expect(f.monto_usd).toBeCloseTo(esc.causado.val[i], 2));
+  });
+
+  it('todas las filas llevan FECHA = día 1, Vista GYP y Monto_Local = Monto_USD × tasa', () => {
+    for (const f of filas) {
+      expect(f.fecha).toBe('2026-10-01');
+      expect(f.vista).toBe('GYP');
+      const tasa = params[f.empresa]?.tasa || 0;
+      expect(f.monto_local).toBeCloseTo(f.monto_usd * tasa, 2);
+    }
+  });
 });

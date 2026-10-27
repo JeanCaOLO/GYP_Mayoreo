@@ -40,25 +40,28 @@
 //      `origen='programada'`.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// NOTA DE ALCANCE — dónde vive el motor
+// DÓNDE VIVE EL MOTOR (recálculo server-side)
 // ─────────────────────────────────────────────────────────────────────────────
-// El motor de cálculo (`src/pages/proyeccion-gyp/engine.ts`) es TypeScript del
-// FRONTEND: importa el cliente de Supabase y utilidades de navegador, y no corre
-// tal cual en el runtime Deno de una Edge Function. Por eso esta corrida NO
-// reimplementa el motor. El RECÁLCULO de los dos escenarios se resuelve de una de
-// estas dos formas, en este orden de preferencia:
+// El motor de cálculo (`src/pages/proyeccion-gyp/engine.ts`) y sus módulos
+// (`causado`, `capas`, `destino`, `salida`, `seed`) son TypeScript PURO: no usan
+// el cliente de Supabase del navegador ni APIs de browser. Por eso SÍ corren en
+// el runtime Deno. Esta corrida los reutiliza SIN duplicarlos, a través del
+// puente `_shared/motor.ts`, que re-exporta esos módulos por ruta relativa. Así
+// hay UNA sola fuente de verdad: la corrida programada calcula EXACTAMENTE las
+// mismas cifras que la pantalla (el mismo motor que valida el oráculo de 190).
 //
-//   (a) El llamador (otra pieza de servidor, o un paso previo del cron que sí
-//       tenga el motor portado) envía en el body `filas: FilaSalida[]` ya
-//       calculadas; esta función las publica.
-//   (b) Si no llegan filas, el recálculo server-side queda como TODO explícito:
-//       portar el motor a un módulo compartido Deno/navegador (sin dependencias
-//       de cliente) y llamarlo aquí. Mientras tanto, el paso `calculo` se marca
-//       `error` con un mensaje claro y la publicación NO corre.
+// El RECÁLCULO de los dos escenarios se resuelve así:
+//   (a) Si el llamador envía en el body `filas: FilaSalida[]` ya calculadas, se
+//       publican tal cual (p. ej. un disparo manual que ya tiene el resultado).
+//   (b) Si no llegan filas (caso normal de pg_cron, body `{}`), la función LEE
+//       los insumos de Supabase con el cliente de SERVICIO (`_shared/cargarInsumos.ts`)
+//       y corre `construirFilasEscenarios`. Si faltan reglas o parámetros del
+//       periodo, el paso `calculo` se marca `error` y NO se publica (R-27.8): una
+//       corrida desatendida nunca publica datos incompletos ni la semilla de prueba.
 //
-// El núcleo de CP-56 que esta función SÍ implementa por completo: las guardias
-// (solapamiento + datos frescos), la bitácora por pasos, la hora de Caracas y la
-// delegación idempotente de la publicación.
+// El núcleo de CP-56 que esta función implementa: el recálculo server-side, las
+// guardias (solapamiento + datos frescos), la bitácora por pasos, la hora de
+// Caracas y la delegación idempotente de la publicación.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTRATO DE ENTRADA (body JSON, POST — opcional; pg_cron puede llamar sin body)
@@ -78,6 +81,8 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { cargarInsumos } from "../_shared/cargarInsumos.ts";
+import { construirFilasEscenarios } from "../_shared/motor.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -552,30 +557,40 @@ serve(async (req: Request) => {
       corte: corteExtraccion,
     });
 
-    const filas: FilaSalida[] = Array.isArray(body.filas) ? body.filas : [];
     const dimCuenta: string[] | undefined = Array.isArray(body.dimCuenta)
       ? body.dimCuenta.map(String)
       : undefined;
 
-    if (filas.length === 0) {
-      // Caso (b) de la NOTA DE ALCANCE: el motor vive en el cliente y no se
-      // recibieron filas calculadas. El recálculo server-side exige portar el
-      // motor a un módulo compartido Deno/navegador. Se marca el paso `calculo`
-      // en error y NO se publica (R-27.8: la publicación no corre si el cálculo
-      // no terminó).
-      const msg =
-        "recálculo server-side no disponible: el motor (engine.ts) vive en el " +
-        "cliente. Enviar 'filas' ya calculadas en el body, o portar el motor a un " +
-        "módulo compartido Deno/navegador (TODO tarea de porte). No se publica.";
+    // El recálculo de los DOS escenarios corre SERVER-SIDE con el mismo motor del
+    // navegador (módulo compartido `_shared/motor.ts`, que re-exporta `engine.ts`
+    // sin duplicarlo). Así la corrida programada produce EXACTAMENTE las mismas
+    // cifras que la publicación manual (CP-56 #2 / R-27.8). Si el llamador ya envía
+    // `filas` calculadas (p. ej. un disparo manual con oráculo), se respetan.
+    let filas: FilaSalida[] = Array.isArray(body.filas) ? body.filas : [];
+    try {
+      if (filas.length === 0) {
+        const insumos = await cargarInsumos(db, periodo);
+        if (insumos.corte && !corteExtraccion) corteExtraccion = insumos.corte;
+        filas = construirFilasEscenarios(periodo, insumos) as FilaSalida[];
+        if (filas.length === 0) {
+          throw new Error("el motor no produjo filas (sin reglas activas para el periodo).");
+        }
+        log.push(`recálculo server-side ok: ${filas.length} filas de los dos escenarios.`);
+      } else {
+        log.push(`filas recibidas en el body: ${filas.length} (no se recalcula).`);
+      }
+    } catch (errCalc) {
+      // Datos incompletos o fallo del motor: NO se publica (R-27.8). Se conserva
+      // lo ya publicado y se registra el error del paso `calculo`.
+      const msg = "recálculo falló: " + String(errCalc instanceof Error ? errCalc.message : errCalc);
       log.push(msg);
       await cerrarCorrida(db, idCalculo, "error", { mensaje: msg, filas: 0 });
       return json(
-        { ok: false, ejecutada: false, motivo: "sin_motor_server", periodo, log },
+        { ok: false, ejecutada: false, motivo: "calculo", periodo, log },
         200,
       );
     }
     await cerrarCorrida(db, idCalculo, "ok", { filas: filas.length, corte: corteExtraccion });
-    log.push(`recálculo ok: ${filas.length} filas de los dos escenarios.`);
 
     // ── PASO 4: CHECKLIST CP-44 (CP-56 #3 / R-27.5) ──────────────────────────
     // Catálogo para el ítem "Combinada ⊂ dim_cuenta" (si no vino en el body).

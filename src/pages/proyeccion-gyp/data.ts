@@ -229,22 +229,9 @@ export async function cargarDesdeSupabase(
 // Publicar el resultado (escribe proyeccion_resultado)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface FilaResultado {
-  periodo: string;
-  fecha: string;
-  vista: string;
-  combinada: string;
-  pais: string;
-  empresa: string;
-  tasa_mensual: number | null;
-  ajuste: number;
-  ajuste_usd: number;
-  monto_local: number;
-  monto_usd: number;
-  centro_costo: string;
-  cuenta_contable: string;
-  proyeccion: number;
-}
+// FilaResultado vive en salida.ts (módulo puro). Se re-exporta aquí para
+// no romper a sus consumidores históricos (import { FilaResultado } from './data').
+export type { FilaResultado } from './salida';
 
 /** Reemplaza las filas del periodo y escribe el nuevo resultado. */
 export async function publicarResultado(periodo: string, filas: FilaResultado[]): Promise<void> {

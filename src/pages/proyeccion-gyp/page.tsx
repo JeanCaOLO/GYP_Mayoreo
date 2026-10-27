@@ -9,12 +9,13 @@ import {
   type AgregadoEmpresa,
 } from './engine';
 import { CIFRAS_VALIDADAS, EMPRESAS } from './seed';
+import { construirFilasEscenarios } from './salida';
 import {
   construirDesdeSemilla,
   cargarDesdeSupabase,
   cargarDatosDetalle,
   ensamblarReglas,
-  publicarResultado,
+  publicarViaEdge,
   refrescarDesdeFabric,
   guardarFactorMes,
   cargarProgramacion,
@@ -422,24 +423,34 @@ export default function ProyeccionGypPage() {
       return;
     setPublicando(true);
     try {
-      const filas: FilaResultado[] = reglas.map((r, i) => ({
-        periodo: data.periodo,
-        fecha: data.periodo + '-01',
-        vista: 'GYP',
-        combinada: r.combinada,
-        pais: r.pais,
-        empresa: r.empresa,
-        tasa_mensual: r.tasaMensual,
-        ajuste: 0,
-        ajuste_usd: 0,
-        monto_local: val[i] * (params[r.empresa]?.tasa || 0),
-        monto_usd: val[i],
-        centro_costo: r.cc,
-        cuenta_contable: r.cuenta,
-        proyeccion: 1,
-      }));
-      await publicarResultado(data.periodo, filas);
-      addToast('success', `Proyección publicada: ${filas.length} filas en proyeccion_resultado.`);
+      // CP-49 / FALLO 1: se publican los DOS escenarios (Proyeccion=1 proyectado,
+      // Proyeccion=2 causado). `construirFilasEscenarios` (en salida.ts) es la
+      // FUENTE ÚNICA que comparten esta publicación manual y la corrida programada
+      // server-side, para que ambas produzcan EXACTAMENTE las mismas filas. La
+      // Edge Function `publicar-proyeccion` recorre ambos escenarios y hace
+      // DELETE+INSERT idempotente por (periodo, escenario).
+      const filas: FilaResultado[] = construirFilasEscenarios(data.periodo, {
+        reglas,
+        metodos,
+        params,
+        empresas: EMPRESAS,
+        gn,
+      });
+      const res = await publicarViaEdge(data.periodo, filas);
+      if (res.ok) {
+        addToast(
+          'success',
+          `Proyección publicada: ${filas.length} filas (proyectado + causado) en proyeccion_resultado.`,
+        );
+      } else if (res.motivo === 'huerfanas') {
+        addToast(
+          'error',
+          `No se publicó: hay Combinadas fuera del catálogo (${(res.huerfanas ?? []).length}). ` +
+            `Revisa el catálogo antes de publicar.`,
+        );
+      } else {
+        addToast('error', 'No se pudo publicar: ' + (res.mensaje ?? 'error del servidor.'));
+      }
     } catch (err) {
       addToast('error', 'No se pudo publicar: ' + (err as Error).message);
     } finally {

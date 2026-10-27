@@ -21,12 +21,31 @@
  * de `engine.ts`, para no duplicar la verdad.
  */
 
-import type { Regla } from './engine';
-import { PAIS } from './engine';
-import type { FilaResultado } from './data';
+import type { Regla, Metodo, Parametro } from './engine';
+import { PAIS, calcularEscenarios } from './engine';
 
-export type { FilaResultado } from './data';
-
+/**
+ * Las 13 columnas de la tabla final (contrato CP-52/CP-05), más `proyeccion`
+ * (escenario: 1 proyectado, 2 causado). Vive aquí —módulo PURO— para que el
+ * motor y la publicación puedan compartirla sin arrastrar el cliente de Supabase
+ * del navegador. `data.ts` la re-exporta para no romper a sus consumidores.
+ */
+export interface FilaResultado {
+  periodo: string;
+  fecha: string;
+  vista: string;
+  combinada: string;
+  pais: string;
+  empresa: string;
+  tasa_mensual: number | null;
+  ajuste: number;
+  ajuste_usd: number;
+  monto_local: number;
+  monto_usd: number;
+  centro_costo: string;
+  cuenta_contable: string;
+  proyeccion: number;
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // Mapas propios del contrato (CP-52 / CP-05)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -272,4 +291,71 @@ export function validarContraCatalogo(
     }
   }
   return huerfanas;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Construcción de las filas de los DOS escenarios (fuente única de publicación)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Insumos del motor ya ensamblados (estado de la pantalla o de la corrida). */
+export interface InsumosPublicacion {
+  reglas: Regla[];
+  metodos: Record<string, Metodo>;
+  params: Record<string, Parametro>;
+  empresas: readonly string[];
+  /** Promedio por defecto (N) de las reglas de promedio sin N propio. */
+  gn: number;
+  /** Datos del corte para el modo de causado 'calendario' (§E), opcionales. */
+  diaDelCorte?: number;
+  diasDelMes?: number;
+}
+
+/**
+ * Construye las `FilaResultado` de los DOS escenarios (CP-01/CP-49): una fila por
+ * regla, `proyeccion.val[i]` para el escenario 1 (Proyectado, `proyeccion=1`) y
+ * `causado.val[i]` para el escenario 2 (Causado, `proyeccion=2`), alineados por
+ * índice con `reglas`. `Monto_Local = Monto_USD × tasa` de la empresa, `FECHA` =
+ * día 1 (CP-04), `Vista='GYP'`, `Ajuste`/`Ajuste_USD`=0, país del mapa propio
+ * (CP-52), `Tasa_Mensual` tal como viene en la regla (CP-05).
+ *
+ * FUENTE ÚNICA: la usan tanto la publicación manual (`page.tsx`) como la corrida
+ * programada server-side (`supabase/functions/_shared/motor.ts`), para que ambas
+ * produzcan EXACTAMENTE las mismas filas. La fusión por Combinada, la validación
+ * de catálogo y el DELETE+INSERT por escenario los hace `publicar-proyeccion`.
+ */
+export function construirFilasEscenarios(
+  periodo: string,
+  insumos: InsumosPublicacion,
+): FilaResultado[] {
+  const { reglas, metodos, params, empresas, gn, diaDelCorte, diasDelMes } = insumos;
+  const escenarios = calcularEscenarios({
+    reglas,
+    metodos,
+    params,
+    empresas: [...empresas],
+    gn,
+    diaDelCorte,
+    diasDelMes,
+  });
+  const fecha = fechaDia1(periodo);
+  const filaDe = (r: Regla, monto: number, escenario: number): FilaResultado => ({
+    periodo,
+    fecha,
+    vista: 'GYP',
+    combinada: r.combinada,
+    pais: r.pais || PAIS[r.empresa] || r.empresa,
+    empresa: r.empresa,
+    tasa_mensual: r.tasaMensual,
+    ajuste: 0,
+    ajuste_usd: 0,
+    monto_local: monto * (params[r.empresa]?.tasa || 0),
+    monto_usd: monto,
+    centro_costo: r.cc,
+    cuenta_contable: r.cuenta,
+    proyeccion: escenario,
+  });
+  return [
+    ...reglas.map((r, i) => filaDe(r, escenarios.proyeccion.val[i], 1)),
+    ...reglas.map((r, i) => filaDe(r, escenarios.causado.val[i], 2)),
+  ];
 }
