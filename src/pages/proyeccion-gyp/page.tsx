@@ -514,7 +514,8 @@ export default function ProyeccionGypPage() {
         } else {
           addToast(
             'error',
-            `No se pudo guardar en la base la regla nueva ${x.empresa} · ${x.concepto}: ${motivoError(r.error)}.`,
+            `No se pudo guardar en la base la regla nueva ${x.empresa} · ${x.concepto}: ${motivoError(r.error)}. ` +
+              'Queda solo en pantalla y se pierde al recargar.',
           );
         }
       });

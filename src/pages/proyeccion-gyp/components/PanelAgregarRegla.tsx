@@ -54,6 +54,16 @@ interface CuentaCandidata {
 
 const combinadaDe = (cuenta: string, cc: string, empresa: string) => `${cuenta}-${cc}-${empresa}`;
 
+/**
+ * Id del método con esa operación; se prefiere el de fábrica. Los ids van tal
+ * cual están en `proyeccion_metodo` (el monto fijo es `m_fijo`): uno inventado
+ * hace fallar el insert por la clave foránea de `proyeccion_regla.metodo`.
+ */
+const metodoPorOp = (metodos: Record<string, Metodo>, op: string, porDefecto: string) => {
+  const lista = Object.values(metodos).filter((m) => m.op === op);
+  return (lista.find((m) => m.fijo) ?? lista[0])?.id ?? porDefecto;
+};
+
 export interface PanelAgregarReglaProps {
   empresas: readonly string[];
   metodos: Record<string, Metodo>;
@@ -112,7 +122,7 @@ export default function PanelAgregarRegla({
       empresa,
       concepto,
       grupo: grupoDe(concepto),
-      metodo: 'm_valor_fijo',
+      metodo: metodoPorOp(metodos, 'valor_fijo', 'm_fijo'),
       valor: 0,
       combinada: existente?.combinada || `${concepto}-${empresa}`,
       cc: existente?.cc || '00.00.000.00',
@@ -331,7 +341,7 @@ function CaminoRepartir({
   const [seleccion, setSeleccion] = useState<string[]>([]);
   const { lista, filtrar, filtro } = useBuscadorCuentas(cuentasDe(concepto));
 
-  const metodoFijo = Object.values(metodos).find((m) => m.op === 'valor_fijo')?.id ?? 'm_valor_fijo';
+  const metodoFijo = metodoPorOp(metodos, 'valor_fijo', 'm_fijo');
   const elegidas = lista.filter((c) => seleccion.includes(c.combinada) && !ocupadas.has(c.combinada));
 
   const crear = () => {
@@ -437,8 +447,7 @@ function CaminoCadaCuenta({
   const [seleccion, setSeleccion] = useState<string[]>([]);
   const { lista, filtrar, filtro } = useBuscadorCuentas(cuentasDe(concepto));
 
-  const metodoId =
-    Object.values(metodos).find((m) => m.op === op)?.id ?? `m_${op}`;
+  const metodoId = metodoPorOp(metodos, op, op === 'valor_fijo' ? 'm_fijo' : `m_${op}`);
   const elegidas = lista.filter((c) => seleccion.includes(c.combinada) && !ocupadas.has(c.combinada));
   const excede = elegidas.length > MAX_REGLAS;
 
