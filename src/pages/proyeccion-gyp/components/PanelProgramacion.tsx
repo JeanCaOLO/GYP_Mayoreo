@@ -7,6 +7,7 @@ import {
   type FrecuenciaProgramacion,
   type Corrida,
   type Fuente,
+  type Tick,
 } from '../data';
 import { nombreMes } from './PestanaParametros';
 
@@ -159,6 +160,20 @@ export function duracionEnClaro(inicio: string | null, fin: string | null): stri
   return resto ? `${min} min ${resto} s` : `${min} min`;
 }
 
+/** Origen de una corrida para la pantalla: el botón siempre es «manual». */
+export function origenCorrida(c: Pick<Corrida, 'origen' | 'lanzadaPor'>): 'programada' | 'manual' {
+  return c.lanzadaPor === 'manual' || c.origen === 'manual' ? 'manual' : 'programada';
+}
+
+/** Minutos sin ticks a partir de los cuales el planificador se da por detenido. */
+const TICK_SILENCIO_MIN = 15;
+
+/** ¿El planificador dejó de llamar? Sin tick o con el último hace más de 15 min. */
+export function planificadorCallado(tick: Tick | null, ahora: Date = new Date()): boolean {
+  if (!tick) return true;
+  return ahora.getTime() - new Date(tick.ts).getTime() > TICK_SILENCIO_MIN * 60 * 1000;
+}
+
 export interface PanelProgramacionProps {
   /** Configuración actual (de `proyeccion_programacion`). */
   programacion: Programacion;
@@ -166,7 +181,11 @@ export interface PanelProgramacionProps {
   onGuardarProgramacion: (cambios: CambiosProgramacion) => void;
   /** Última publicación con éxito del periodo (de `proyeccion_corrida`). */
   ultimaPublicacion: Corrida | null;
-  /** Mes de trabajo vigente (para «el mes vigente» y la etiqueta del select). */
+  /** Último tick del planificador (`proyeccion_tick`): cuándo revisó y qué decidió. */
+  ultimoTick?: Tick | null;
+  /** Se llama al terminar «Ejecutar ahora», para recargar la bitácora. */
+  onCorridaTerminada?: () => void;
+  /** Mes de trabajo guardado (para «el mes vigente» y la etiqueta del select). */
   periodo: string;
   /** Datos de Fabric: fecha de la última extracción y su corte (informativo). */
   generado: string | null;
@@ -181,6 +200,8 @@ export default function PanelProgramacion({
   programacion,
   onGuardarProgramacion,
   ultimaPublicacion,
+  ultimoTick = null,
+  onCorridaTerminada,
   periodo,
   generado,
   corte,
@@ -209,6 +230,7 @@ export default function PanelProgramacion({
       addToast('error', 'No se pudo ejecutar: ' + (err as Error).message);
     } finally {
       setEjecutando(false);
+      onCorridaTerminada?.();
     }
   };
   const mesFijo = p.periodo != null;
@@ -329,7 +351,7 @@ export default function PanelProgramacion({
                 }
                 className="rounded border border-slate-200 px-2 py-1 text-sm"
               >
-                <option value="vigente">el mes de trabajo vigente</option>
+                <option value="vigente">el mes de trabajo guardado ({nombreMes(periodo)})</option>
                 <option value="fijo">un mes fijo ({nombreMes(mesFijo ? p.periodo! : periodo)})</option>
               </select>
             </div>
@@ -352,8 +374,9 @@ export default function PanelProgramacion({
                   recomendado
                 </span>
                 <span className="block text-xs text-slate-500">
-                  Si la extracción no es del día o su corte no avanzó, la corrida se omite y se
-                  conserva lo publicado. Es el guardia que evita publicar los números de ayer.
+                  Si Fabric no escribió el mes hoy, la corrida se omite, se conserva lo publicado y
+                  se reintenta en el siguiente chequeo. Es el guardia que evita publicar los números
+                  de ayer.
                 </span>
               </span>
             </label>
@@ -395,6 +418,8 @@ export default function PanelProgramacion({
                 {ultimaPublicacion.filas != null && (
                   <> · {ultimaPublicacion.filas.toLocaleString('es-VE')} filas</>
                 )}
+                {' · '}
+                {origenCorrida(ultimaPublicacion)}
               </span>
             </p>
           ) : (
@@ -410,6 +435,22 @@ export default function PanelProgramacion({
               </span>
             )}
           </p>
+          {p.activa &&
+            (planificadorCallado(ultimoTick) ? (
+              <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
+                El servidor no está revisando el horario
+                {ultimoTick ? ` (último chequeo ${fechaCaracasEnClaro(ultimoTick.ts)})` : ''}: revisa el
+                job <span className="font-mono">corrida-programada-gyp</span> de pg_cron.
+              </p>
+            ) : (
+              <p className="mt-2 text-xs text-slate-500">
+                Último chequeo del servidor: {fechaCaracasEnClaro(ultimoTick!.ts)} ·{' '}
+                <span className={ultimoTick!.estado === 'error' ? 'font-semibold text-red-600' : ''}>
+                  {ultimoTick!.estado}
+                </span>
+                {ultimoTick!.motivo && <> — {ultimoTick!.motivo}</>}
+              </p>
+            ))}
           <button
             type="button"
             onClick={ejecutarAhora}

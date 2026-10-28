@@ -265,6 +265,9 @@ export async function cargarDesdeSupabase(
   }
 
   if (!encontroAlgo) throw new Error('sin-datos');
+  // «Última extracción»: la última escritura real de Fabric en el mes (sello
+  // del trigger de gyp_historico_mensual), no la fecha de la foto embebida.
+  data.generado = await cargarSelloExtraccion(periodo);
   data.fuente = 'db';
   return data;
 }
@@ -1642,5 +1645,172 @@ export async function cargarUltimaPublicacion(periodo: string): Promise<Corrida 
     corte: r.corte ?? null,
     mensaje: r.mensaje ?? null,
     lanzadaPor: r.lanzada_por ?? null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mes de trabajo guardado y compartido (`proyeccion_mes_trabajo`, fila id=1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mes de trabajo elegido por alguien en la pantalla y compartido por todos. No
+ * se deriva de la fecha: el 1 de noviembre sigue en octubre hasta que alguien
+ * elija noviembre. `null` si la base no responde o aún no hay fila.
+ */
+export async function cargarMesTrabajo(): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('proyeccion_mes_trabajo')
+    .select('periodo')
+    .eq('id', 1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return (data as { periodo: string }).periodo ?? null;
+}
+
+/** Fija el mes de trabajo para todos (y para la corrida programada). */
+export async function guardarMesTrabajo(periodo: string): Promise<ResultadoEscritura> {
+  const autor = await autorActual();
+  const { error } = await supabase
+    .from('proyeccion_mes_trabajo')
+    .upsert({ id: 1, periodo, actualizado_por: autor, actualizado_en: new Date().toISOString() });
+  return error ? { ok: false, motivo: 'error', error } : { ok: true };
+}
+
+/** 'YYYY-MM' + n meses (n puede ser negativo). */
+function sumarMeses(periodo: string, n: number): string {
+  const [a, m] = periodo.split('-').map(Number);
+  const d = new Date(Date.UTC(a, m - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/** 'YYYY-MM' del calendario en hora de Caracas. */
+export function periodoCalendarioCaracas(ahora: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Caracas',
+    year: 'numeric',
+    month: '2-digit',
+  })
+    .format(ahora)
+    .slice(0, 7);
+}
+
+/**
+ * Meses que ofrece «Sobre qué mes trabajas»: el mes en curso y el anterior (en
+ * Caracas), más el guardado si es otro. Del más reciente al más antiguo.
+ */
+export function mesesCandidatos(guardado: string, ahora: Date = new Date()): string[] {
+  const actual = periodoCalendarioCaracas(ahora);
+  return [...new Set([actual, sumarMeses(actual, -1), guardado])].sort().reverse();
+}
+
+/** Lo que hay en la base de un mes candidato, para pintar su tarjeta. */
+export interface MesDisponible {
+  periodo: string;
+  /** Filas del mes en `gyp_historico_mensual` (0 = Fabric no lo escribió). */
+  filas: number;
+  corte: string | null;
+  dias: number | null;
+  trans: number | null;
+}
+
+/** Lee de `gyp_historico_mensual` y `proyeccion_parametro` el estado de cada mes. */
+export async function cargarMesesDisponibles(periodos: string[]): Promise<MesDisponible[]> {
+  const { data: pr } = await supabase
+    .from('proyeccion_parametro')
+    .select('periodo,corte,dias_habiles_mes,dias_transcurridos')
+    .in('periodo', periodos);
+  return Promise.all(
+    periodos.map(async (periodo) => {
+      const { count } = await supabase
+        .from('gyp_historico_mensual')
+        .select('periodo', { count: 'exact', head: true })
+        .eq('periodo', periodo);
+      const filas = (pr ?? []).filter((r) => r.periodo === periodo) as Pick<
+        RowParametro,
+        'corte' | 'dias_habiles_mes' | 'dias_transcurridos'
+      >[];
+      const cortes = filas.map((r) => r.corte).filter((c): c is string => !!c).sort();
+      return {
+        periodo,
+        filas: count ?? 0,
+        corte: cortes.length ? cortes[cortes.length - 1] : null,
+        dias: filas[0]?.dias_habiles_mes ?? null,
+        trans: filas[0]?.dias_transcurridos ?? null,
+      };
+    }),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sello de la extracción y ticks del planificador
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `timestamptz` → 'YYYY-MM-DD HH:MM' en hora de Caracas. */
+function fechaHoraCaracas(iso: string): string {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Caracas',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(new Date(iso))
+      .map((x) => [x.type, x.value]),
+  );
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
+/**
+ * Última escritura real de Fabric en el mes (`gyp_extraccion_sello`, lo pone un
+ * trigger de `gyp_historico_mensual`), en hora de Caracas. `null` si Fabric aún
+ * no escribió desde que existe el trigger.
+ */
+export async function cargarSelloExtraccion(periodo: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('gyp_extraccion_sello')
+    .select('escrito_en')
+    .eq('periodo', periodo)
+    .maybeSingle();
+  if (error || !data) return null;
+  return fechaHoraCaracas((data as { escrito_en: string }).escrito_en);
+}
+
+/** Una llamada a corrida-programada (`proyeccion_tick`) y lo que decidió. */
+export interface Tick {
+  ts: string;
+  origen: string;
+  /** enviado | ejecutada | omitida | error */
+  estado: string;
+  periodo: string | null;
+  motivo: string | null;
+  filas: number | null;
+  duracionMs: number | null;
+}
+
+/** Último tick del planificador (origen 'programada'), o `null`. */
+export async function cargarUltimoTick(): Promise<Tick | null> {
+  const { data, error } = await supabase
+    .from('proyeccion_tick')
+    .select('ts,origen,estado,periodo,motivo,filas,duracion_ms')
+    .eq('origen', 'programada')
+    .order('ts', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  const r = data as {
+    ts: string; origen: string; estado: string; periodo: string | null;
+    motivo: string | null; filas: number | null; duracion_ms: number | null;
+  };
+  return {
+    ts: r.ts,
+    origen: r.origen,
+    estado: r.estado,
+    periodo: r.periodo,
+    motivo: r.motivo,
+    filas: r.filas,
+    duracionMs: r.duracion_ms,
   };
 }

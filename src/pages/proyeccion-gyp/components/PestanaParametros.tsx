@@ -1,5 +1,5 @@
 import type { Metodo, Regla, Parametro } from '../engine';
-import type { Fuente, Programacion, CambiosProgramacion, Corrida } from '../data';
+import type { Fuente, Programacion, CambiosProgramacion, Corrida, Tick } from '../data';
 import { fmt } from './formato';
 import PanelProgramacion from './PanelProgramacion';
 
@@ -22,10 +22,10 @@ import PanelProgramacion from './PanelProgramacion';
  *     datos viejos», más la lectura de los datos de Fabric y de la última/próxima
  *     publicación. Vive en `PanelProgramacion`.
  *
- * Nota sobre la lista de meses: por ahora el mes de trabajo vigente es la única
- * tarjeta real; la lista completa de meses disponibles vendrá de
- * `gyp_historico_mensual` / `cargarDatosDetalle`. `mesesDisponibles` permite a
- * page.tsx inyectar esa lista cuando exista sin tocar este componente.
+ * Lista de meses: page.tsx pasa en `mesesDisponibles` el mes en curso, el
+ * anterior y el guardado, con su estado leído de `gyp_historico_mensual`. El mes
+ * de trabajo es una elección guardada y compartida (`proyeccion_mes_trabajo`):
+ * no cambia solo con el calendario.
  */
 
 /** Estado de un mes disponible, derivado del corte y los días hábiles. */
@@ -131,9 +131,9 @@ export interface PestanaParametrosProps {
   /** Frescura de la capa de datos (deriva el estado del mes). */
   fuente: Fuente;
   /**
-   * Meses disponibles con su estado. Si no se pasa, se muestra solo el vigente
-   * derivado de `periodo`/`corte`/`fuente`. La lista real vendrá de
-   * `gyp_historico_mensual` / `cargarDatosDetalle`.
+   * Meses que se pueden elegir con su estado (en curso, anterior y guardado,
+   * leídos de `gyp_historico_mensual`). Si no llega, se muestra solo el de
+   * trabajo derivado de `periodo`/`corte`/`fuente`.
    */
   mesesDisponibles?: EstadoMes[];
   /**
@@ -156,6 +156,10 @@ export interface PestanaParametrosProps {
   onGuardarProgramacion?: (cambios: CambiosProgramacion) => void;
   /** Última publicación con éxito del periodo (de `proyeccion_corrida`). */
   ultimaPublicacion?: Corrida | null;
+  /** Último tick del planificador (de `proyeccion_tick`). */
+  ultimoTick?: Tick | null;
+  /** Se llama al terminar «Ejecutar ahora», para recargar la bitácora. */
+  onCorridaTerminada?: () => void;
   /** Fecha de generación de la última extracción de Fabric (informativo, CP-56). */
   generado?: string | null;
 }
@@ -176,6 +180,8 @@ export default function PestanaParametros({
   programacion,
   onGuardarProgramacion,
   ultimaPublicacion,
+  ultimoTick,
+  onCorridaTerminada,
   generado,
 }: PestanaParametrosProps) {
   // Una tarjeta por mes disponible. Mientras no llegue la lista real, el único
@@ -239,13 +245,10 @@ export default function PestanaParametros({
             );
           })}
         </div>
-        {(!mesesDisponibles || mesesDisponibles.length <= 1) && (
-          <p className="text-[11px] text-slate-400">
-            La lista completa de meses disponibles se tomará de{' '}
-            <code className="font-mono">gyp_historico_mensual</code>. Por ahora se muestra el mes de
-            trabajo vigente.
-          </p>
-        )}
+        <p className="text-[11px] text-slate-400">
+          El mes no cambia solo con el calendario: a comienzos de mes se sigue cerrando el anterior
+          hasta que alguien elija el nuevo. La corrida programada publica este mismo mes.
+        </p>
       </div>
 
       {/* ── 2 · La venta del mes (tabla conservada del módulo base) ───────── */}
@@ -345,6 +348,8 @@ export default function PestanaParametros({
           programacion={programacion}
           onGuardarProgramacion={onGuardarProgramacion}
           ultimaPublicacion={ultimaPublicacion ?? null}
+          ultimoTick={ultimoTick ?? null}
+          onCorridaTerminada={onCorridaTerminada}
           periodo={periodo}
           generado={generado ?? null}
           corte={corte}

@@ -4,8 +4,10 @@ import {
   proximaPublicacionEnClaro,
   corteEnClaro,
   duracionEnClaro,
+  origenCorrida,
+  planificadorCallado,
 } from './PanelProgramacion';
-import { PROGRAMACION_DEFAULT, type Programacion } from '../data';
+import { PROGRAMACION_DEFAULT, mesesCandidatos, type Programacion, type Tick } from '../data';
 
 /**
  * Pruebas de las ayudas puras del panel de actualización programada (CP-56).
@@ -76,4 +78,49 @@ describe('duracionEnClaro', () => {
     expect(duracionEnClaro('2026-10-23T11:30:00Z', '2026-10-23T11:31:12Z')).toBe('1 min 12 s');
     expect(duracionEnClaro(null, null)).toBe('—');
   });
+});
+
+describe('mesesCandidatos', () => {
+  it('ofrece el mes en curso y el anterior (Caracas), más recientes primero', () => {
+    // 28 oct 2026, 10:00 Caracas
+    expect(mesesCandidatos('2026-10', new Date('2026-10-28T14:00:00Z'))).toEqual(['2026-10', '2026-09']);
+  });
+  it('el 1 de noviembre conserva octubre guardado y ofrece noviembre', () => {
+    // 1 nov 2026, 06:50 Caracas = 10:50 UTC
+    expect(mesesCandidatos('2026-10', new Date('2026-11-01T10:50:00Z'))).toEqual(['2026-11', '2026-10']);
+  });
+  it('usa la fecha de Caracas, no la de UTC', () => {
+    // 1 nov 02:00 UTC = 31 oct 22:00 Caracas
+    expect(mesesCandidatos('2026-10', new Date('2026-11-01T02:00:00Z'))).toEqual(['2026-10', '2026-09']);
+  });
+  it('incluye el guardado aunque sea más viejo', () => {
+    expect(mesesCandidatos('2026-08', new Date('2026-10-28T14:00:00Z'))).toEqual([
+      '2026-10',
+      '2026-09',
+      '2026-08',
+    ]);
+  });
+  it('cruza el año', () => {
+    expect(mesesCandidatos('2026-12', new Date('2027-01-05T14:00:00Z'))).toEqual(['2027-01', '2026-12']);
+  });
+});
+
+describe('origenCorrida', () => {
+  it('el botón es manual aunque la fila vieja diga programada', () => {
+    expect(origenCorrida({ origen: 'programada', lanzadaPor: 'manual' })).toBe('manual');
+    expect(origenCorrida({ origen: 'manual', lanzadaPor: 'manual' })).toBe('manual');
+    expect(origenCorrida({ origen: 'programada', lanzadaPor: 'pg_cron' })).toBe('programada');
+  });
+});
+
+describe('planificadorCallado', () => {
+  const tick = (ts: string): Tick => ({
+    ts, origen: 'programada', estado: 'omitida', periodo: null, motivo: null, filas: null, duracionMs: null,
+  });
+  const ahora = new Date('2026-10-28T14:00:00Z');
+  it('sin ticks, está callado', () => expect(planificadorCallado(null, ahora)).toBe(true));
+  it('tick de hace 5 minutos: activo', () =>
+    expect(planificadorCallado(tick('2026-10-28T13:55:00Z'), ahora)).toBe(false));
+  it('tick de hace 20 minutos: callado', () =>
+    expect(planificadorCallado(tick('2026-10-28T13:40:00Z'), ahora)).toBe(true));
 });

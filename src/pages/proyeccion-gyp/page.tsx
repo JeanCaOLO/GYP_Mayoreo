@@ -27,6 +27,11 @@ import {
   cargarProgramacion,
   guardarProgramacion,
   cargarUltimaPublicacion,
+  cargarUltimoTick,
+  cargarMesTrabajo,
+  guardarMesTrabajo,
+  cargarMesesDisponibles,
+  mesesCandidatos,
   PROGRAMACION_DEFAULT,
   type ProyeccionData,
   type ReglaBase,
@@ -37,10 +42,11 @@ import {
   type Programacion,
   type CambiosProgramacion,
   type Corrida,
+  type Tick,
 } from './data';
 import SelloFrescura from './components/SelloFrescura';
 import KpiHeader from './components/KpiHeader';
-import PestanaParametros from './components/PestanaParametros';
+import PestanaParametros, { estadoDelPeriodo, type EstadoMes } from './components/PestanaParametros';
 import PestanaReglas, { type Override, type NuevaRegla } from './components/PestanaReglas';
 import PestanaResultado from './components/PestanaResultado';
 import PestanaTablaSalida from './components/PestanaTablaSalida';
@@ -97,6 +103,9 @@ export default function ProyeccionGypPage() {
   // Actualización programada (CP-56, pestaña Parámetros) y última publicación.
   const [programacion, setProgramacion] = useState<Programacion>(() => ({ ...PROGRAMACION_DEFAULT }));
   const [ultimaPublicacion, setUltimaPublicacion] = useState<Corrida | null>(null);
+  const [ultimoTick, setUltimoTick] = useState<Tick | null>(null);
+  // Meses que se pueden elegir (CP-33): el en curso, el anterior y el guardado.
+  const [mesesDisponibles, setMesesDisponibles] = useState<EstadoMes[]>([]);
   const [traza, setTraza] = useState<Traza | null>(null);
   // Empresas cuya prueba contable CP-47 no cuadra (gobierna la publicación).
   const [pruebaMalasCP47, setPruebaMalasCP47] = useState<string[]>([]);
@@ -241,8 +250,11 @@ export default function ProyeccionGypPage() {
   //    Fabric (Edge Function refrescar-proyeccion-fabric) y luego recarga lo que
   //    quedó en Supabase. ──
   const traer = useCallback(
-    async (manual: boolean) => {
-      const seed = construirDesdeSemilla();
+    async (manual: boolean, periodo: string) => {
+      const semilla = construirDesdeSemilla();
+      // La foto embebida es de su mes; para otro mes no se arrastra su corte.
+      const seed: ProyeccionData =
+        periodo === semilla.periodo ? semilla : { ...semilla, periodo, corte: null, generado: null };
 
       // Paso 1 (solo manual): pedirle al backend que consulte Fabric y escriba.
       if (manual) {
@@ -270,7 +282,11 @@ export default function ProyeccionGypPage() {
             `Pantalla actualizada — datos al ${nuevo.corte || '—'}. 6 empresas y ${nuevo.reglasBase.length} reglas recalculadas.`,
           );
       } catch {
-        setData((d) => ({ ...d, fuente: manual ? 'error' : d.fuente }));
+        setData((d) => ({
+          ...d,
+          periodo,
+          fuente: manual || periodo !== d.periodo ? 'error' : d.fuente,
+        }));
         if (manual)
           addToast('error', 'No hay extracción en la base. Se mantiene la foto embebida validada.');
       }
@@ -278,8 +294,11 @@ export default function ProyeccionGypPage() {
     [addToast],
   );
 
+  // Arranca en el mes de trabajo guardado (compartido), no en el del calendario.
   useEffect(() => {
-    traer(false);
+    cargarMesTrabajo()
+      .catch(() => null)
+      .then((p) => traer(false, p ?? construirDesdeSemilla().periodo));
   }, [traer]);
 
   // ── Carga del detalle del periodo (presupuesto para Comparar, CP-45). Degrada
@@ -325,14 +344,36 @@ export default function ProyeccionGypPage() {
     };
   }, []);
 
+  const recargarCorridas = useCallback(() => {
+    cargarUltimaPublicacion(data.periodo)
+      .then(setUltimaPublicacion)
+      .catch(() => setUltimaPublicacion(null));
+    cargarUltimoTick()
+      .then(setUltimoTick)
+      .catch(() => setUltimoTick(null));
+  }, [data.periodo]);
+
+  useEffect(() => {
+    recargarCorridas();
+  }, [recargarCorridas]);
+
+  // Tarjetas de «Sobre qué mes trabajas»: estado de cada mes según lo que
+  // Fabric dejó en gyp_historico_mensual y proyeccion_parametro.
   useEffect(() => {
     let vivo = true;
-    cargarUltimaPublicacion(data.periodo)
-      .then((c) => {
-        if (vivo) setUltimaPublicacion(c);
+    cargarMesesDisponibles(mesesCandidatos(data.periodo))
+      .then((ms) => {
+        if (!vivo) return;
+        setMesesDisponibles(
+          ms.map((m) =>
+            m.filas > 0
+              ? estadoDelPeriodo(m.periodo, m.corte, 'db', m.dias, m.trans)
+              : { periodo: m.periodo, corte: null, fase: 'sin_datos', diasHabiles: m.dias, transcurridos: m.trans },
+          ),
+        );
       })
       .catch(() => {
-        if (vivo) setUltimaPublicacion(null);
+        if (vivo) setMesesDisponibles([]);
       });
     return () => {
       vivo = false;
@@ -382,7 +423,7 @@ export default function ProyeccionGypPage() {
     if (r.ok) return;
     if (r.motivo === 'conflicto') {
       addToast('error', `Otra persona cambió ${que} antes. Se recargaron las reglas; revisa y vuelve a guardar.`);
-      traer(false);
+      traer(false, data.periodo);
     } else {
       addToast(
         'error',
@@ -548,15 +589,21 @@ export default function ProyeccionGypPage() {
   // La recarga por `data.periodo` (useEffect del presupuesto) y `traer` repoblará
   // el detalle del nuevo mes; aquí se limpia el estado del mes previo.
   const elegirMes = useCallback(
-    (nuevoPeriodo: string) => {
+    async (nuevoPeriodo: string) => {
       if (nuevoPeriodo === data.periodo) return;
+      const r = await guardarMesTrabajo(nuevoPeriodo);
+      if (!r.ok) {
+        addToast('error', `No se pudo guardar el mes de trabajo (${motivoError(r.error)}).`);
+        return;
+      }
       setPresupuesto([]);
+      setDetalleCuenta([]);
       setOverrides({});
       setNuevas([]);
-      setData((d) => ({ ...d, periodo: nuevoPeriodo }));
+      await traer(false, nuevoPeriodo);
       addToast('info', `Mes de trabajo fijado en ${nuevoPeriodo} para todos.`);
     },
-    [data.periodo, addToast],
+    [data.periodo, addToast, traer],
   );
 
   // El factor se guarda POR MES (CP-33 / CP-37). Actualiza el estado local y lo
@@ -723,7 +770,7 @@ export default function ProyeccionGypPage() {
           <div className="flex items-center gap-3">
             <SelloFrescura fuente={data.fuente} generado={data.generado} corte={data.corte} />
             <button
-              onClick={() => traer(true)}
+              onClick={() => traer(true, data.periodo)}
               className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
               Actualizar
@@ -773,11 +820,14 @@ export default function ProyeccionGypPage() {
           periodo={data.periodo}
           corte={data.corte}
           fuente={data.fuente}
+          mesesDisponibles={mesesDisponibles}
           onElegirMes={elegirMes}
           onFactorMes={factorMes}
           programacion={programacion}
           onGuardarProgramacion={guardarProg}
           ultimaPublicacion={ultimaPublicacion}
+          ultimoTick={ultimoTick}
+          onCorridaTerminada={recargarCorridas}
           generado={data.generado}
         />
       )}
