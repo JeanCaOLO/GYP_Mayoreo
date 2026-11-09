@@ -140,12 +140,27 @@ SUMA_USD_VALIDADO = "SUM(g.Monto_USD + COALESCE(g.Ajuste_USD,0))"
 # Lectura de parámetros (sin exponer secretos)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Key Vault del que salen los secretos. Se puede cambiar por entorno para tener
+# un vault por proyecto (productivo y QA) sin tocar el script.
+VAULT = (os.environ.get('SUPABASE_VAULT') or 'proyeccion-gyp').strip()
+
+# Si está a '1', los secretos salen SOLO del entorno y NO se consulta el vault.
+# Sirve para correr contra QA desde un workspace cuyo vault apunta a productivo:
+# sin esto, el vault gana y el script escribiría en el proyecto equivocado.
+SOLO_ENTORNO = (os.environ.get('SUPABASE_SOLO_ENTORNO') or '').strip() == '1'
+
+
 def _secreto(nombre):
-    """Lee un secreto de Fabric si hay almacén configurado; si no, del entorno."""
+    """Lee un secreto del entorno o del Key Vault de Fabric.
+
+    Orden: si SUPABASE_SOLO_ENTORNO=1, solo el entorno. Si no, primero el vault
+    (el comportamiento de siempre) y el entorno como respaldo.
+    """
+    if SOLO_ENTORNO:
+        return os.environ.get(nombre)
     try:
         import notebookutils  # type: ignore
-        # Ajusta 'proyeccion-gyp' al nombre de tu Key Vault vinculado en Fabric.
-        return notebookutils.credentials.getSecret('proyeccion-gyp', nombre)
+        return notebookutils.credentials.getSecret(VAULT, nombre)
     except Exception:
         return os.environ.get(nombre)
 
@@ -192,6 +207,19 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         "Faltan SUPABASE_URL o SUPABASE_SERVICE_KEY. Configúralos en el Key Vault "
         "vinculado al workspace de Fabric, o como variables de entorno del notebook."
     )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Aviso del destino. Escribir en el proyecto equivocado es el error caro de este
+# script, y es silencioso: las tablas se llaman igual en QA y en productivo. Por
+# eso el host va impreso ANTES de cualquier escritura. Nunca se imprime la clave.
+# ─────────────────────────────────────────────────────────────────────────────
+_host = SUPABASE_URL.replace('https://', '').split('.')[0]
+print('=' * 70)
+print('  ESCRIBIENDO EN EL PROYECTO SUPABASE: %s' % _host)
+print('  secretos desde: %s' % ('ENTORNO (vault omitido)' if SOLO_ENTORNO
+                                else "vault '%s' con respaldo de entorno" % VAULT))
+print('  Si este no es el proyecto que esperabas, DETEN el notebook ahora.')
+print('=' * 70)
 
 hoy = datetime.date.today()
 
@@ -252,6 +280,18 @@ def corte_publicado(periodo_):
         return None
 
 
+class ErrorEscritura(Exception):
+    """Fallo escribiendo en Supabase durante la extraccion de UN periodo.
+
+    D5: antes estas tres rutas lanzaban SystemExit, que hereda de BaseException
+    y por tanto NO lo atrapa el `except Exception` del bucle por periodo. El
+    script moria a medias: el segundo mes no se procesaba y el detalle por
+    cuenta, ya borrado, quedaba vacio hasta la siguiente corrida. Siendo una
+    Exception normal, el periodo se marca en error y la corrida sigue con el
+    siguiente mes.
+    """
+
+
 def _post(tabla, filas, on_conflict, ignore_duplicates=False):
     """UPSERT (o INSERT-if-absent) por lotes contra PostgREST.
 
@@ -276,7 +316,7 @@ def _post(tabla, filas, on_conflict, ignore_duplicates=False):
         try:
             urllib.request.urlopen(req, timeout=60).read()
         except urllib.error.HTTPError as e:
-            raise SystemExit('Error escribiendo %s: HTTP %s %s'
+            raise ErrorEscritura('Error escribiendo %s: HTTP %s %s'
                              % (tabla, e.code, e.read().decode('utf-8', 'replace')))
 
 
@@ -295,7 +335,7 @@ def _patch(tabla, periodo_, empresa_, cambios):
     try:
         urllib.request.urlopen(req, timeout=60).read()
     except urllib.error.HTTPError as e:
-        raise SystemExit('Error actualizando %s: HTTP %s %s'
+        raise ErrorEscritura('Error actualizando %s: HTTP %s %s'
                          % (tabla, e.code, e.read().decode('utf-8', 'replace')))
 
 
@@ -313,7 +353,7 @@ def _delete(tabla, filtro):
     try:
         urllib.request.urlopen(req, timeout=60).read()
     except urllib.error.HTTPError as e:
-        raise SystemExit('Error borrando %s: HTTP %s %s'
+        raise ErrorEscritura('Error borrando %s: HTTP %s %s'
                          % (tabla, e.code, e.read().decode('utf-8', 'replace')))
 
 
@@ -548,18 +588,51 @@ def extraer_periodo(periodo_):
 
     # --- 6. CP-10 · Presupuesto del periodo por cuenta (presupuesto_gyp_v2) ---
     #     Viaja con la extracción en gyp_historico_cuenta.presupuesto.
-    ppto = {}   # combinada -> presupuesto USD del periodo
+    ppto = {}        # combinada -> presupuesto USD del periodo
+    ppto_info = {}   # combinada -> identidad, para las que NO tienen movimiento
     try:
+        # OLO SE FILTRA, como en todas las capas del proyecto: no pertenece a
+        # este reporte. presupuesto_gyp_v2 SÍ lo trae, y son 77 cuentas por
+        # +2.548.963,90 en 2026-10 — más que el presupuesto entero de las seis
+        # empresas juntas (90 cuentas, −591.660,57). Sin este filtro el
+        # presupuesto del P&L sale con el signo cambiado.
+        #
+        # El filtro va por empresa y NO por pertenencia al catálogo: así no
+        # depende de que el catálogo esté completo, y una cuenta de Mayoreo que
+        # falte en el catálogo se nota en vez de desaparecer.
+        # El LEFT JOIN solo IDENTIFICA (empresa, concepto); nunca filtra montos.
         for f in consultar("""
-    SELECT p.Combinada AS comb, SUM(COALESCE(p.Monto_USD,0)) AS usd
+    SELECT p.Combinada AS comb, p.Empresa AS emp,
+           p.Cuenta AS cuenta, p.Centro_Costo AS centro, {s} AS slot,
+           SUM(COALESCE(p.Monto_USD,0)) AS usd
     FROM Gold.dbo.presupuesto_gyp_v2 p
-    WHERE p.FECHA >= '{i}' AND p.FECHA < '{f}'
-    GROUP BY p.Combinada
-    """.format(i=ini, f=fin)):
-            ppto[f['comb']] = round(num(f['usd']), 2)
-        print('  presupuesto     : %d cuentas (presupuesto_gyp_v2)' % len(ppto))
+    LEFT JOIN Gold.dbo.catalogo_gyp_general_v2 c ON c.Combinada = p.Combinada
+    WHERE p.Fecha >= '{i}' AND p.Fecha < '{f}'
+      AND p.Empresa IN ('Beval','Febeca','Sillaca','Cofersa','Mundial','Prisma')
+    GROUP BY p.Combinada, p.Empresa, p.Cuenta, p.Centro_Costo, {s}
+    """.format(s=SLOT, i=ini, f=fin)):
+            comb = f['comb']
+            ppto[comb] = round(ppto.get(comb, 0.0) + num(f['usd']), 2)
+            # El slot viene del catálogo: si es NULL, esa cuenta de Mayoreo NO
+            # está en el catálogo y no se puede clasificar en el P&L. Su monto
+            # sigue contando en `ppto` (para las cuentas que sí tienen
+            # movimiento), pero no se puede crear una fila de detalle para ella.
+            if f.get('slot'):
+                ppto_info[comb] = {
+                    'empresa': f['emp'], 'cuenta': f['cuenta'],
+                    'centro_costo': f['centro'],
+                    'concepto': CONCEPTO.get(f['slot'], f['slot']),
+                }
+        print('  presupuesto     : %d cuentas (presupuesto_gyp_v2), '
+              '%d con catalogo' % (len(ppto), len(ppto_info)))
     except Exception as e:
-        print('  (sin presupuesto del periodo: %s)' % e)
+        # NO se traga el error en silencio: un presupuesto en 0 se propaga a
+        # "Lo presupuestado", a la columna Presupuesto de Comparar y al reparto
+        # por presupuesto, y nadie lo atribuye a su causa. Se avisa fuerte.
+        print('  *** PRESUPUESTO EN 0 — la consulta fallo: %s' % e)
+        print('      El P&L va a mostrar presupuesto 0 en todas las empresas.')
+        ppto = {}
+        ppto_info = {}
 
     # --- 7. CP-11 · Detalle por cuenta (gyp_historico_cuenta + dim_cuenta) ---
     #     Acumulado del mes por Combinada (suma corregida CP-08) y los 12 meses
@@ -596,8 +669,16 @@ def extraer_periodo(periodo_):
         det_meses.setdefault(f['comb'], {})[f['mes']] = round(num(f['usd']), 2)
 
     detalle = []
-    for comb in sorted(set(det_acum) | set(det_meses)):
-        info = det_info.get(comb, {})
+    # Se incluyen también las cuentas que SOLO tienen presupuesto (sin movimiento
+    # en el mes ni en los 12 anteriores): sin ellas, "Lo presupuestado" y el
+    # reparto por presupuesto ignoran conceptos presupuestados que aún no
+    # gastaron. Solo entran las que el catálogo sabe clasificar: una cuenta sin
+    # concepto no se puede mostrar en el P&L.
+    solo_ppto = (set(ppto) & set(ppto_info)) - set(det_acum) - set(det_meses)
+    if solo_ppto:
+        print('  solo presupuesto: %d cuentas sin movimiento' % len(solo_ppto))
+    for comb in sorted(set(det_acum) | set(det_meses) | solo_ppto):
+        info = det_info.get(comb) or ppto_info.get(comb, {})
         meses_json = {m: det_meses.get(comb, {}).get(m, 0.0) for m in meses12}
         detalle.append({
             'periodo': periodo_,
@@ -653,7 +734,17 @@ def extraer_periodo(periodo_):
     # --- 8. CP-15 · Alertas: cuentas con movimiento en el mayor que el catálogo
     #     GyP no reconoce. Se cruza por Combinada el mayor (Vista GYP, sin 9.5.*)
     #     contra catalogo_gyp_general_v2. No se listan cuentas de balance.
-    alertas = _calcular_alertas(periodo_, ini, fin, serie_ini)
+    try:
+        alertas = _calcular_alertas(periodo_, ini, fin, serie_ini)
+        alertas_ok = True
+    except ErrorAlertas as e:
+        # D4: se conserva lo ya publicado y se avisa fuerte. El resto de la
+        # extraccion (historia, detalle, parametros) sigue: no tiene sentido
+        # perder el mes entero porque fallaran las alertas.
+        print('  *** %s' % e)
+        print('      Se CONSERVAN las alertas anteriores del periodo.')
+        alertas = []
+        alertas_ok = False
     print('  alertas         : %d cuentas por revisar (proyeccion_alerta)' % len(alertas))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -667,10 +758,15 @@ def extraer_periodo(periodo_):
     # Guarda 1: la extracción trajo algo.
     if not acum and not serie:
         errores.append('la extracción no devolvió ningún concepto.')
-    # Guarda 2: el corte avanzó respecto al publicado (la que más duele, §7).
+    # Guarda 2: el corte no RETROCEDIÓ respecto al publicado (§7).
+    # D1: antes era `corte <= prev`, y eso congelaba el mes. Un corte IGUAL es
+    # normal y hay que reescribir: es el caso de los ajustes del cierre
+    # contable (en noviembre se corrigen asientos de octubre sin que el corte
+    # avance) y el de una segunda corrida el mismo día. Solo un corte que
+    # RETROCEDE delata una ingesta parada, y solo eso debe bloquear.
     prev = corte_publicado(periodo_)
-    if prev and corte <= prev:
-        errores.append('el corte NO avanzó (publicado %s, nuevo %s). '
+    if prev and corte < prev:
+        errores.append('el corte RETROCEDIÓ (publicado %s, nuevo %s). '
                        'Suele ser la ingesta parada; se conservan los datos buenos.'
                        % (prev, corte))
     if errores:
@@ -717,11 +813,19 @@ def extraer_periodo(periodo_):
         print('  escritas %d filas en dim_cuenta' % len(dim))
 
     # 3) Alertas del catálogo (CP-15). Reemplazo del periodo.
-    _delete('proyeccion_alerta', 'periodo=eq.%s' % periodo_)
-    if alertas:
-        _post('proyeccion_alerta', alertas, 'periodo,combinada')
-        filas_escritas += len(alertas)
-        print('  escritas %d filas en proyeccion_alerta' % len(alertas))
+    #    D4: el borrado va CONDICIONADO a que el calculo haya salido bien. Antes
+    #    se borraba siempre, asi que un fallo dejaba el periodo sin alertas y la
+    #    pantalla decia "cero pendientes".
+    if alertas_ok:
+        _delete('proyeccion_alerta', 'periodo=eq.%s' % periodo_)
+        if alertas:
+            _post('proyeccion_alerta', alertas, 'periodo,combinada')
+            filas_escritas += len(alertas)
+            print('  escritas %d filas en proyeccion_alerta' % len(alertas))
+        else:
+            print('  sin alertas que publicar en este periodo')
+    else:
+        print('  proyeccion_alerta: NO se toca (el calculo de alertas fallo)')
 
     # 4) Parámetros por empresa, en dos pasos para NO pisar el factor_correccion
     #    que fija control (documento 07 §5).
@@ -774,12 +878,17 @@ def _calcular_alertas(periodo_, ini, fin, serie_ini):
     LEFT JOIN Gold.dbo.catalogo_gyp_general_v2 c ON c.Combinada = g.Combinada
     WHERE g.FECHA >= '{a}' AND g.FECHA < '{f}'
       AND {gyp} AND {no95}
-      AND g.CUENTA_CONTABLE NOT LIKE '1.%'   -- activo   (balance, no GyP)
-      AND g.CUENTA_CONTABLE NOT LIKE '2.%'   -- pasivo
-      AND g.CUENTA_CONTABLE NOT LIKE '3.%'   -- patrimonio
-      AND g.CUENTA_CONTABLE NOT LIKE '1-%'
-      AND g.CUENTA_CONTABLE NOT LIKE '2-%'
-      AND g.CUENTA_CONTABLE NOT LIKE '3-%'
+      -- D6 · Las cuentas de balance se descartan segun los primeros digitos que
+      -- usa el CATALOGO DE CADA EMPRESA, no con una lista fija 1/2/3.
+      -- Las empresas no numeran igual: Mundial usa sobre todo el 5, mientras
+      -- Febeca, Prisma y Sillaca usan el 7. Con la lista fija entraban 194
+      -- cuentas de balance a la pestana Alertas en 2026-10, pidiendo
+      -- clasificar cosas que no van en el P&L.
+      AND EXISTS (
+        SELECT 1 FROM Gold.dbo.catalogo_gyp_general_v2 k
+         WHERE k.Empresa = g.Empresa
+           AND LEFT(k.Cuenta, 1) = LEFT(g.CUENTA_CONTABLE, 1)
+      )
     GROUP BY g.Combinada
     """.format(i=ini, f=fin, a=serie_ini, s=SLOT, gyp=COND_GYP, no95=COND_NO_95)):
             comb = filas['comb']
@@ -811,8 +920,16 @@ def _calcular_alertas(periodo_, ini, fin, serie_ini):
                 'ultimo_mes': filas.get('ult_mes'),
             })
     except Exception as e:
-        print('  (no se pudieron calcular las alertas: %s)' % e)
+        # D4: NO se traga el error. Antes devolvia la lista a medias (o vacia) y
+        # el llamador borraba las alertas viejas igualmente: la pestana Alertas
+        # mostraba cero pendientes COMO SI TODO ESTUVIERA BIEN. Un cero que
+        # significa "fallo el calculo" es peor que no mostrar nada.
+        raise ErrorAlertas('no se pudieron calcular las alertas: %s' % e)
     return alertas
+
+
+class ErrorAlertas(Exception):
+    """D4: el calculo de alertas fallo. No se tocan las alertas ya publicadas."""
 
 
 class GuardaNoSuperada(Exception):

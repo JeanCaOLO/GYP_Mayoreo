@@ -148,6 +148,14 @@ export interface PestanaParametrosProps {
    */
   onFactorMes?: (empresa: string, factor: number) => void;
   /**
+   * P2 · Guarda días, transcurridos y tasa del mes. Antes se editaban en
+   * pantalla y se perdían al recargar; la tasa ni siquiera era editable.
+   */
+  onParametroMes?: (
+    empresa: string,
+    campos: { dias?: number; trans?: number; tasa?: number | null },
+  ) => void;
+  /**
    * Configuración de la actualización programada (CP-56). Si no se pasa, la
    * tercera sección no se muestra (fallback mientras la base no responde).
    */
@@ -173,6 +181,7 @@ export default function PestanaParametros({
   mesesDisponibles,
   onElegirMes,
   onFactorMes,
+  onParametroMes,
   programacion,
   onGuardarProgramacion,
   ultimaPublicacion,
@@ -282,8 +291,17 @@ export default function PestanaParametros({
                 );
                 const ac = iv >= 0 ? reglas[iv].acum : null;
                 const pr = iv >= 0 ? val[iv] : ic >= 0 ? val[ic] : 0;
-                const upd = (campo: 'dias' | 'trans' | 'factor', v: number) =>
+                const upd = (campo: 'dias' | 'trans' | 'factor' | 'tasa', v: number) =>
                   setParams((prev) => ({ ...prev, [e]: { ...prev[e], [campo]: v } }));
+
+                // P2 · Un campo vacío NO vale 0. `+'' || 0` convertía borrar el
+                // contenido en guardar un cero: factor 0 anula la proyección y
+                // días 0 la vuelve indefinida. Si lo escrito no es un número
+                // utilizable, se conserva lo que había.
+                const num = (txt: string, previo: number): number => {
+                  const v = parseFloat(txt);
+                  return Number.isFinite(v) ? v : previo;
+                };
                 return (
                   <tr key={e} className="border-t border-slate-100">
                     <td className="px-3 py-2 font-semibold text-slate-800">{e}</td>
@@ -293,7 +311,10 @@ export default function PestanaParametros({
                         min={1}
                         max={31}
                         value={p.dias}
-                        onChange={(ev) => upd('dias', +ev.target.value || 0)}
+                        onChange={(ev) => upd('dias', num(ev.target.value, p.dias))}
+                        onBlur={(ev) =>
+                          onParametroMes?.(e, { dias: num(ev.target.value, p.dias) })
+                        }
                         className="w-20 rounded border border-slate-200 px-2 py-1 text-right font-mono text-xs"
                       />
                     </td>
@@ -303,7 +324,10 @@ export default function PestanaParametros({
                         min={0}
                         max={31}
                         value={p.trans}
-                        onChange={(ev) => upd('trans', +ev.target.value || 0)}
+                        onChange={(ev) => upd('trans', num(ev.target.value, p.trans))}
+                        onBlur={(ev) =>
+                          onParametroMes?.(e, { trans: num(ev.target.value, p.trans) })
+                        }
                         className="w-20 rounded border border-slate-200 px-2 py-1 text-right font-mono text-xs"
                       />
                     </td>
@@ -315,12 +339,26 @@ export default function PestanaParametros({
                         min={0}
                         max={5}
                         value={p.factor}
-                        onChange={(ev) => upd('factor', +ev.target.value || 0)}
-                        onBlur={(ev) => onFactorMes?.(e, +ev.target.value || 0)}
+                        onChange={(ev) => upd('factor', num(ev.target.value, p.factor))}
+                        onBlur={(ev) => onFactorMes?.(e, num(ev.target.value, p.factor))}
                         className="w-20 rounded border border-slate-200 px-2 py-1 text-right font-mono text-xs"
                       />
                     </td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums">{fmt(p.tasa, 2)}</td>
+                    <td className="px-3 py-1.5 text-right">
+                      {/* P2 · La tasa es editable: una tasa mal extraída no se
+                          podía corregir sin tocar la base a mano. */}
+                      <input
+                        type="number"
+                        step={0.0001}
+                        min={0}
+                        value={p.tasa ?? ''}
+                        onChange={(ev) => upd('tasa', num(ev.target.value, p.tasa ?? 0))}
+                        onBlur={(ev) =>
+                          onParametroMes?.(e, { tasa: num(ev.target.value, p.tasa ?? 0) })
+                        }
+                        className="w-28 rounded border border-slate-200 px-2 py-1 text-right font-mono text-xs"
+                      />
+                    </td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums">
                       {ac == null ? <span className="text-slate-400">por Colocación</span> : fmt(-ac)}
                     </td>

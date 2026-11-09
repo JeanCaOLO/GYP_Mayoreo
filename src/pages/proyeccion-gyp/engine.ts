@@ -88,6 +88,18 @@ export interface Metodo {
   orden: number;
   /** true = método de fábrica (no se puede perder sin reasignar). */
   fijo: boolean;
+  /**
+   * C9 · Pasos de una FORMULA PROPIA (`proyeccion_formula`).
+   *
+   * Un método de fábrica tiene una sola operación y estos campos van vacíos.
+   * Una fórmula armada por el usuario tiene varias piezas, y aquí viajan para
+   * que `calcular()` pueda evaluarla: antes las fórmulas se guardaban, se
+   * editaban y NUNCA llegaban al motor, porque `proyeccion_regla.formula_id`
+   * no lo leía nadie.
+   */
+  pasos?: Paso[];
+  /** Cómo se combinan esos pasos. Una fórmula propia SUMA sus piezas. */
+  combinar?: 'cadena' | 'suma';
 }
 
 export interface Parametro {
@@ -266,6 +278,21 @@ export interface MetodoV2 {
   nombre: string;
   /** secuencia de pasos: fold izquierda a derecha, sin precedencia (CP-18). */
   pasos: Paso[];
+  /**
+   * C9 · Cómo se combinan los pasos.
+   *
+   * `'cadena'` (por defecto, y lo de siempre): fold de izquierda a derecha,
+   * cada paso opera sobre el resultado del anterior. Es lo que necesitan los
+   * métodos de fábrica de varios pasos.
+   *
+   * `'suma'`: cada paso se calcula POR SU CUENTA y se suman con su signo. Es lo
+   * que significa una fórmula propia — «sumas o restas piezas: un monto, un %
+   * de la venta, lo típico de unas cuentas…»—. Encadenadas, la segunda pieza
+   * tomaba la primera como base y el resultado no se parecía a nada.
+   *
+   * Omitirlo deja el comportamiento anterior intacto: los 190 casos no se mueven.
+   */
+  combinar?: 'cadena' | 'suma';
   /** turno 1..5; se deduce de las bases (§C). */
   orden: number;
   /** causado por defecto (§E). */
@@ -454,6 +481,20 @@ export function baseV1aV2(b: Base): BaseCapas {
  * el escenario proyectado). Esto es el puente que mantiene la aritmética idéntica.
  */
 export function metodoV1aV2(m: Metodo): MetodoV2 {
+  // C9 · Si el método trae sus propios pasos es una fórmula: se usa tal cual,
+  // con su modo de combinación. Un método de fábrica no los trae y sigue
+  // expresándose como un único paso, exactamente como antes.
+  if (m.pasos && m.pasos.length) {
+    return {
+      id: m.id,
+      nombre: m.nombre,
+      orden: m.orden,
+      causadoDefault: 'calendario',
+      deFabrica: false,
+      pasos: m.pasos,
+      combinar: m.combinar ?? 'suma',
+    };
+  }
   return {
     id: m.id,
     nombre: m.nombre,
@@ -560,9 +601,14 @@ function evaluarPaso(paso: Paso, acc: number | undefined, valorEfectivo: number 
     }
     case 'derivada':
       return -ctx.cargoFijoDemas(r.empresa);
-    case 'componentes':
-      // Suma de otras reglas ya calculadas (6.1 lo resuelve por capas). Andamiaje.
-      return acc ?? 0;
+    case 'componentes': {
+      // C9 · Antes devolvia `acc ?? 0`, es decir 0 en el primer paso: una
+      // formula que empezara por esta pieza daba 0 entero y no se podia asignar
+      // a ninguna regla. Ahora resuelve su base como cualquier otro paso (la
+      // suma de las reglas que la base referencia) y aplica el signo.
+      const b = acc !== undefined ? acc : resolverBaseRef(paso.base, ctx);
+      return sg * b;
+    }
     case 'porcentaje':
     case 'multiplicar': {
       const b = acc !== undefined ? acc : resolverBaseRef(paso.base, ctx);
@@ -589,6 +635,16 @@ function evaluarPaso(paso: Paso, acc: number | undefined, valorEfectivo: number 
  */
 export function evaluarMetodoV2(m: MetodoV2, ctx: CtxPaso): number {
   const unSoloPaso = m.pasos.length === 1;
+
+  // C9 · Fórmula propia: cada pieza se calcula sola y se suman con su signo.
+  // `acc` va SIEMPRE en undefined para que ningún paso tome el anterior como
+  // base; el signo lo pone `invertir` dentro de `evaluarPaso`.
+  if (m.combinar === 'suma' && !unSoloPaso) {
+    let total = 0;
+    for (const paso of m.pasos) total += evaluarPaso(paso, undefined, paso.valor, ctx);
+    return total;
+  }
+
   let acc: number | undefined;
   for (let i = 0; i < m.pasos.length; i++) {
     const paso = m.pasos[i];
@@ -708,9 +764,15 @@ export function calcular({
   };
 
   // Resuelve una referencia a otro concepto ya calculado de la misma empresa.
+  // C7: SUMA todas las reglas del concepto, no solo la primera. Un concepto
+  // puede tener varias reglas (la del concepto más las adicionales); con
+  // `findIndex`, un "5 % de Personal" dejaba fuera un bono adicional.
   const refConcepto = (empresa: string, concepto: string): number => {
-    const j = R.findIndex((x) => x.empresa === empresa && x.concepto === concepto);
-    return j >= 0 && hecho[j] ? val[j] : 0;
+    let total = 0;
+    R.forEach((x, j) => {
+      if (x.empresa === empresa && x.concepto === concepto && hecho[j]) total += val[j];
+    });
+    return total;
   };
 
   // Suma del Cargo Fijo de las demás empresas (para la derivada de Prisma).
@@ -769,12 +831,20 @@ export function calcular({
           esVentaODerivada,
           diaDelCorte,
           diasDelMes,
+          // C4: lo asentado al corte en la cuenta de la regla. Sin esto, el modo
+          // 'real' devolvia `opts.asentadoAlCorte ?? 0`, es decir SIEMPRE 0:
+          // cualquier regla con "lo registrado al corte" causaba cero.
+          asentadoAlCorte: r.acum,
         });
       }
 
       val[i] = res;
       hecho[i] = true;
-      if (r.concepto === 'Ventas' || m.op === 'derivada') venta[r.empresa] = res;
+      // C2: SUMA, no asigna. Una segunda regla de Ventas (p. ej. un ajuste de
+      // −50.000) debe sumarse a la venta del concepto, no reemplazarla: si la
+      // pisa, los % sobre venta de toda la empresa se calculan sobre esa cifra.
+      if (r.concepto === 'Ventas' || m.op === 'derivada')
+        venta[r.empresa] = (venta[r.empresa] ?? 0) + res;
     });
     recalcular(); // cerrado el turno, se refresca la foto para el siguiente
   }

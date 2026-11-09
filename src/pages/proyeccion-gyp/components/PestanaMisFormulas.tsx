@@ -208,8 +208,16 @@ function formulaEnPalabras(f: Formula): string {
 
 const OP_DE_PIEZA: Record<TipoPieza, OpPaso> = {
   monto_fijo: 'valor_fijo',
-  pct_venta: 'ratio_venta',
-  tipico_cuentas: 'promedio',
+  // C9 · Dos piezas estaban mal traducidas:
+  //   pct_venta      -> era 'ratio_venta' (la PROPORCION historica del concepto
+  //                     sobre la venta), que ignora el porcentaje que escribe el
+  //                     usuario. La pieza dice "un % de la venta": es
+  //                     'porcentaje' sobre la base venta.
+  //   tipico_cuentas -> era 'promedio'. "Lo tipico" es la MEDIANA en todo el
+  //                     resto del aplicativo (m_mediana); el promedio es otra
+  //                     opcion distinta y un mes raro lo mueve.
+  pct_venta: 'porcentaje',
+  tipico_cuentas: 'mediana',
   mes_al_cierre: 'componentes',
   presupuesto: 'presupuesto',
   pct_reglas: 'porcentaje',
@@ -443,6 +451,13 @@ export default function PestanaMisFormulas({
     const cambios = {
       nombre: f.nombre,
       pasos: piezasAPasos(f.piezas),
+      // NOTA C9: una formula propia debe SUMAR sus piezas, no encadenarlas, y
+      // el motor ya lo soporta (`MetodoV2.combinar = 'suma'`). No se envia aqui
+      // porque `crearFormula` arma la fila con columnas explicitas y
+      // proyeccion_formula no tiene esa columna. El modo se deriva al convertir
+      // la formula en metodo, cuando esa conversion exista: hoy `formula_id` se
+      // guarda en la regla y NADIE lo lee, asi que las formulas no llegan al
+      // motor. Ver el informe de C9.
       causado: f.causado,
       de_fabrica: false,
     };

@@ -35,6 +35,7 @@ export type {
 // `InsumosMotor` por compatibilidad con `cargarInsumos.ts`.
 export {
   construirFilasEscenarios,
+  datosDelCorte,
 } from '../../../src/pages/proyeccion-gyp/salida.ts';
 
 export type {

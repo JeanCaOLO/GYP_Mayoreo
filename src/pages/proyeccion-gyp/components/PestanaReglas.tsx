@@ -1,3 +1,4 @@
+import { etiquetaConcepto } from '../seed';
 import { Fragment, useMemo, useState } from 'react';
 import {
   type Causado,
@@ -55,6 +56,13 @@ export interface Override {
 }
 
 export interface NuevaRegla extends ReglaBase {
+  /**
+   * P6 · Borrado LOGICO, igual que las reglas base. Antes una regla nueva se
+   * quitaba del array y no habia forma de recuperarla: el boton "Restaurar" del
+   * pie solo servia para las de la base, asi que borrar una recien creada era
+   * irreversible y sin aviso.
+   */
+  borrada?: boolean;
   n?: number | null;
   nombre?: string | null;
   detalle?: string | null;
@@ -394,7 +402,7 @@ export default function PestanaReglas({
             {eliminadas.map((e) => (
               <div key={e.key} className="flex items-center justify-between text-xs text-slate-500">
                 <span>
-                  {e.empresa} · {e.concepto}{' '}
+                  {e.empresa} · {etiquetaConcepto(e.concepto)}{' '}
                   <span className="font-mono text-[11px] text-slate-400">{e.combinada}</span>
                 </span>
                 <button
@@ -473,7 +481,7 @@ function BloqueTabla({
                           abierto ? 'rotate-90' : ''
                         }`}
                       />
-                      {r.concepto}
+                      {etiquetaConcepto(r.concepto)}
                     </div>
                     <div className="flex flex-wrap items-center gap-1 pl-5">
                       {r.nombre && <span className="text-[11px] text-slate-500">{r.nombre}</span>}

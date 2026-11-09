@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { AgregadoEmpresa, Metodo, Parametro, Regla } from '../engine';
 import { fmt } from './formato';
 import { desglosarRentaBrutaTodas } from './pruebaContable';
@@ -19,6 +19,11 @@ import { trazaRegla, type EscenarioTraza, type Traza } from './traza';
 export interface PestanaResultadoProps {
   empresas: readonly string[];
   agg: Record<string, AgregadoEmpresa>;
+  /**
+   * P10 · Agregados del CAUSADO. El escenario 2 es la mitad de lo que se
+   * publica y no se podia ver en ninguna parte.
+   */
+  aggCausado?: Record<string, AgregadoEmpresa>;
   cifrasValidadas: Record<string, number>;
   /** Suma de una clave del agregado sobre las seis empresas. */
   tot: (k: keyof AgregadoEmpresa) => number;
@@ -39,6 +44,7 @@ export interface PestanaResultadoProps {
 export default function PestanaResultado({
   empresas,
   agg,
+  aggCausado,
   cifrasValidadas,
   tot,
   reglas,
@@ -48,6 +54,16 @@ export default function PestanaResultado({
   onTraza,
   onPruebaMalas,
 }: PestanaResultadoProps) {
+  /**
+   * P10 · Proyectado o Causado.
+   *
+   * La pestaña solo mostraba el proyectado al cierre, y el causado —que es el
+   * otro escenario que se publica— no se podía ver en ninguna parte: para
+   * saber qué iba a Power BI había que mirar la tabla de salida.
+   */
+  const [escenario, setEscenario] = useState<'PROYECTADO' | 'CAUSADO'>('PROYECTADO');
+  const aggVista = escenario === 'CAUSADO' && aggCausado ? aggCausado : agg;
+
   const sn = tot('sn');
   const snBase = Object.values(cifrasValidadas).reduce((a, b) => a + b, 0);
   const dsn = sn - snBase;
@@ -77,9 +93,30 @@ export default function PestanaResultado({
   return (
     <section className="space-y-5">
       <div>
-        <h2 className="text-base font-semibold text-slate-900">P&amp;L proyectado al cierre</h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-base font-semibold text-slate-900">
+            {escenario === 'CAUSADO' ? 'P&L causado al corte' : 'P&L proyectado al cierre'}
+          </h2>
+          <div className="flex gap-1 rounded-lg bg-slate-100 p-0.5">
+            {(['PROYECTADO', 'CAUSADO'] as const).map((x) => (
+              <button
+                key={x}
+                type="button"
+                onClick={() => setEscenario(x)}
+                disabled={x === 'CAUSADO' && !aggCausado}
+                className={`rounded-md px-3 py-1 text-xs font-semibold transition-colors disabled:opacity-40 ${
+                  escenario === x ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+                }`}
+              >
+                {x === 'PROYECTADO' ? 'Proyectado' : 'Causado'}
+              </button>
+            ))}
+          </div>
+        </div>
         <p className="text-sm text-slate-500">
-          Se compara contra las cifras que control validó (promedio de 9 meses, 95 reglas originales).
+          {escenario === 'CAUSADO'
+            ? 'Lo que va del mes al corte. Es el escenario 2 de la tabla que alimenta Power BI.'
+            : 'La estimación al cierre del mes. Es el escenario 1 de la tabla que alimenta Power BI.'}
         </p>
       </div>
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -92,14 +129,12 @@ export default function PestanaResultado({
               <th className="px-3 py-2 text-right">Gastos Op.</th>
               <th className="px-3 py-2 text-right">Gcia. Operativa</th>
               <th className="px-3 py-2 text-right">Semi Neto</th>
-              <th className="px-3 py-2 text-right">vs. validado</th>
             </tr>
           </thead>
           <tbody>
             {empresas.map((e) => {
-              const a = agg[e];
+              const a = aggVista[e];
               if (!a) return null;
-              const d = a.sn - (cifrasValidadas[e] ?? 0);
               return (
                 <tr key={e} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold text-slate-800">{e}</td>
@@ -109,13 +144,6 @@ export default function PestanaResultado({
                   <td className="px-3 py-2 text-right font-mono tabular-nums">{fmt(a.gop)}</td>
                   <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
                     {fmt(a.sn)}
-                  </td>
-                  <td
-                    className={`px-3 py-2 text-right font-mono tabular-nums ${
-                      Math.abs(d) < 1 ? 'text-slate-400' : d > 0 ? 'text-emerald-600' : 'text-red-600'
-                    }`}
-                  >
-                    {Math.abs(d) < 1 ? 'igual' : `${d > 0 ? '+' : ''}${fmt(d)}`}
                   </td>
                 </tr>
               );

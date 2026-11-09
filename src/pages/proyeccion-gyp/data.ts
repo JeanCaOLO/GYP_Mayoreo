@@ -26,6 +26,13 @@ import type {
 } from './engine';
 import { PAIS } from './engine';
 import type { FilaHistoricoCuenta, FilaDimCuenta } from './capas';
+import type { LineaPresupuesto } from './presupuesto';
+import {
+  agregarPorCuenta,
+  conceptosPorCuenta,
+  normalizarEmpresa,
+  repartirEnConceptos,
+} from './presupuesto';
 import {
   METODOS_BASE,
   PARAMS_SEED,
@@ -73,6 +80,42 @@ export interface ReglaBase {
   nivel?: NivelRegla;
   /** Borrado lógico guardado en la base (CP-31). */
   eliminada?: boolean;
+}
+
+/**
+ * Tamaño de página para leer Supabase (D2).
+ *
+ * Supabase corta toda lectura en 1.000 filas y **no avisa**: devuelve 1.000
+ * filas sin error. Toda tabla que pueda pasar de ahí —`gyp_historico_mensual`
+ * (~1.300 y creciendo), `gyp_historico_cuenta` (~4.700 por mes), el catálogo y
+ * el presupuesto— tiene que leerse paginando con `.range()`.
+ */
+const TAM_PAGINA = 1000;
+
+/**
+ * Lee una tabla entera, por páginas de `TAM_PAGINA` (D2).
+ *
+ * Supabase devuelve como mucho 1.000 filas y **no avisa de que cortó**: no hay
+ * error, solo faltan filas. En este proyecto eso no se nota como un fallo, se
+ * nota como cifras que no cuadran, y distintas en cada carga según el orden que
+ * devuelva la base. Toda tabla que pueda pasar de 1.000 filas se lee por aquí.
+ *
+ * Devuelve `null` si alguna página falló, para que el llamador distinga «no hay
+ * datos» de «no se pudieron leer» — y no trate una lectura rota como una tabla
+ * vacía, que es justo el error que esta función existe para evitar.
+ */
+async function leerPaginado<T>(
+  pagina: (desde: number, hasta: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+): Promise<T[] | null> {
+  const filas: T[] = [];
+  for (let desde = 0; ; desde += TAM_PAGINA) {
+    const { data, error } = await pagina(desde, desde + TAM_PAGINA - 1);
+    if (error) return null;
+    if (!data || data.length === 0) break;
+    filas.push(...data);
+    if (data.length < TAM_PAGINA) break;
+  }
+  return filas;
 }
 
 /** Estado inicial 100% desde la semilla (sin red). Reproduce la aceptación. */
@@ -144,6 +187,8 @@ interface RowRegla {
   centro_costo: string; cuenta_contable: string; metodo: string; valor: number | null; activa: boolean;
   id?: number; rev?: number; n?: number | null; nombre?: string | null; detalle?: string | null;
   causado?: Causado; escenarios?: EscenarioRegla; nivel?: NivelRegla; eliminada?: boolean;
+  /** C9 · Fórmula propia asignada a la regla (`proyeccion_formula.id`). */
+  formula_id?: number | null;
 }
 interface RowHistorico {
   periodo: string; empresa: string; concepto: string; monto_usd: number; es_venta: boolean;
@@ -237,14 +282,30 @@ export async function cargarDesdeSupabase(
       escenarios: row.escenarios,
       nivel: row.nivel,
       eliminada: row.eliminada ?? false,
+      // C9 · Si la regla tiene fórmula asignada, su método ES esa fórmula.
+      // Antes `formula_id` se guardaba y no lo leía nadie.
+      ...(row.formula_id != null && { metodo: idMetodoDeFormula(row.formula_id) }),
     }));
     encontroAlgo = true;
   }
 
   // Historia mensual (acumulado del mes + serie). Opcional: la foto embebida ya sirve.
-  const { data: hr } = await supabase
-    .from('gyp_historico_mensual')
-    .select('periodo,empresa,concepto,monto_usd,es_venta');
+  //
+  // D2: se lee PAGINADO. Supabase devuelve como mucho 1.000 filas y no avisa
+  // de que cortó. Esta tabla ya va por ~1.300 filas y crece un bloque cada mes,
+  // así que sin paginar las series salían incompletas —y distintas cada vez,
+  // según el orden que devolviera la base—. Un mes que falta no da error: da
+  // un hueco que el motor trata como "sin registro".
+  const hr: RowHistorico[] = [];
+  for (let desde = 0; ; desde += TAM_PAGINA) {
+    const { data: pagina } = await supabase
+      .from('gyp_historico_mensual')
+      .select('periodo,empresa,concepto,monto_usd,es_venta')
+      .range(desde, desde + TAM_PAGINA - 1);
+    if (!pagina || pagina.length === 0) break;
+    hr.push(...(pagina as RowHistorico[]));
+    if (pagina.length < TAM_PAGINA) break;
+  }
   if (hr && hr.length) {
     const series: Record<string, SerieCuenta> = {};
     const periodosOrden = [...new Set((hr as RowHistorico[]).map((h) => h.periodo))].sort();
@@ -264,6 +325,29 @@ export async function cargarDesdeSupabase(
     encontroAlgo = true;
   }
 
+  // D7: el sello de la extracción sale de la bitácora, no de la semilla.
+  // Estaba escrito a mano ('2026-10-13 10:28') y la cabecera lo mostraba
+  // siempre igual. No es cosmético: la guarda "No publicar con datos viejos"
+  // comprueba si la extracción es del día, así que con el sello congelado
+  // omitiría TODAS las corridas programadas, y por un motivo invisible.
+  const { data: ult } = await supabase
+    .from('proyeccion_corrida')
+    .select('fin,inicio,corte')
+    .eq('periodo', periodo)
+    .eq('paso', 'extraccion')
+    .eq('estado', 'ok')
+    .order('inicio', { ascending: false })
+    .limit(1);
+  if (ult && ult.length) {
+    const fila = ult[0] as { fin: string | null; inicio: string; corte: string | null };
+    data.generado = (fila.fin ?? fila.inicio).slice(0, 16).replace('T', ' ');
+    if (fila.corte) data.corte = fila.corte;
+  } else {
+    // Sin bitácora no se inventa una fecha: se dice que no se sabe. Un sello
+    // falso es peor que ninguno, porque la guarda de frescura se lo cree.
+    data.generado = null;
+  }
+
   if (!encontroAlgo) throw new Error('sin-datos');
   data.fuente = 'db';
   return data;
@@ -275,6 +359,9 @@ export async function cargarDesdeSupabase(
 
 // FilaResultado vive en salida.ts (módulo puro). Se re-exporta aquí para
 // no romper a sus consumidores históricos (import { FilaResultado } from './data').
+// `export type ... from` reexporta el tipo pero NO lo trae al ambito de este
+// modulo; los usos de abajo quedaban sin resolver. Hace falta el import.
+import type { FilaResultado } from './salida';
 export type { FilaResultado } from './salida';
 
 /** Reemplaza las filas del periodo y escribe el nuevo resultado. */
@@ -421,11 +508,16 @@ function numeroODefault(x: number | string | null | undefined): number {
  * (entonces las bases por capas se limitan a empresa/grupo/concepto, Req 5.3).
  */
 export async function cargarDetalleCuenta(periodo: string): Promise<FilaHistoricoCuenta[]> {
-  const { data, error } = await supabase
-    .from('gyp_historico_cuenta')
-    .select('periodo,empresa,combinada,cuenta,centro_costo,concepto,acumulado,presupuesto,meses')
-    .eq('periodo', periodo);
-  if (error || !data) return [];
+  // D2: paginado. Es la tabla mas grande del aplicativo (~4.700 filas por mes):
+  // sin paginar se perdia mas de la mitad del detalle, en silencio.
+  const data = await leerPaginado<FilaHistoricoCuenta>((desde, hasta) =>
+    supabase
+      .from('gyp_historico_cuenta')
+      .select('periodo,empresa,combinada,cuenta,centro_costo,concepto,acumulado,presupuesto,meses')
+      .eq('periodo', periodo)
+      .range(desde, hasta),
+  );
+  if (!data) return [];
   return (data as FilaHistoricoCuenta[]).map((r) => ({
     periodo: r.periodo,
     empresa: r.empresa,
@@ -445,11 +537,16 @@ export async function cargarDetalleCuenta(periodo: string): Promise<FilaHistoric
  * si la base no responde.
  */
 export async function cargarCatalogo(): Promise<FilaDimCuenta[]> {
-  const { data, error } = await supabase
-    .from('dim_cuenta')
-    .select('combinada,empresa,pais,cuenta,centro_costo,descripcion,seccion,linea,detalle,concepto');
-  if (error || !data) return [];
-  return data as FilaDimCuenta[];
+  // D2: paginado. El catalogo cubre las seis empresas y pasa de 1.000 filas;
+  // truncado, las cuentas que faltan quedan sin capas ni descripcion.
+  const data = await leerPaginado<FilaDimCuenta>((desde, hasta) =>
+    supabase
+      .from('dim_cuenta')
+      .select('combinada,empresa,pais,cuenta,centro_costo,descripcion,seccion,linea,detalle,concepto')
+      .range(desde, hasta),
+  );
+  if (!data) return [];
+  return data;
 }
 
 /**
@@ -457,16 +554,20 @@ export async function cargarCatalogo(): Promise<FilaDimCuenta[]> {
  * Devuelve `[]` si la base no responde.
  */
 export async function cargarAlertas(periodo: string): Promise<Alerta[]> {
-  const { data, error } = await supabase
-    .from('proyeccion_alerta')
-    .select('periodo,combinada,accion,sugerencia,movimiento_mes,movimiento_12m,ultimo_mes')
-    .eq('periodo', periodo);
-  if (error || !data) return [];
   interface RowAlerta {
     periodo: string; combinada: string; accion: string; sugerencia: string | null;
     movimiento_mes: number | null; movimiento_12m: number | null; ultimo_mes: number | null;
   }
-  return (data as RowAlerta[]).map((r) => ({
+  // D2: paginado, por si un periodo trae muchas cuentas por revisar.
+  const data = await leerPaginado<RowAlerta>((desde, hasta) =>
+    supabase
+      .from('proyeccion_alerta')
+      .select('periodo,combinada,accion,sugerencia,movimiento_mes,movimiento_12m,ultimo_mes')
+      .eq('periodo', periodo)
+      .range(desde, hasta),
+  );
+  if (!data) return [];
+  return data.map((r) => ({
     periodo: r.periodo,
     combinada: r.combinada,
     accion: r.accion,
@@ -478,17 +579,96 @@ export async function cargarAlertas(periodo: string): Promise<Alerta[]> {
 }
 
 /**
- * Lee el presupuesto del periodo. El presupuesto viaja en el detalle por cuenta
- * (`gyp_historico_cuenta.presupuesto`); esta función lo agrega por empresa y
- * concepto para que el motor y la interfaz lo consuman a nivel de concepto.
+ * Lee las líneas de presupuesto del periodo desde `presupuestos_lineas`, que es
+ * donde las carga el módulo Presupuestos de esta misma aplicación.
  *
- * Acepta el detalle ya leído (para no releer la tabla) o lo lee si no se pasa.
+ * `presupuestos_lineas` guarda año y mes en columnas aparte, no un `periodo`
+ * de texto; de ahí el troceo del `YYYY-MM`. El nombre de la empresa sale de
+ * `companias` y se traduce al del módulo (ver `normalizarEmpresa`).
+ *
+ * Solo líneas `activa = true`: el módulo Presupuestos borra lógicamente, y una
+ * carga retirada no debe seguir contando.
+ */
+export async function cargarLineasPresupuesto(periodo: string): Promise<LineaPresupuesto[]> {
+  const [anioTxt, mesTxt] = periodo.split('-');
+  const anio = Number(anioTxt);
+  const mes = Number(mesTxt);
+  if (!Number.isFinite(anio) || !Number.isFinite(mes)) return [];
+
+  const { data: comps, error: eComp } = await supabase.from('companias').select('id,nombre');
+  if (eComp) return [];
+  const nombreDe = new Map<string, string>();
+  (comps as RowCompania[] | null)?.forEach((c) => nombreDe.set(c.id, c.nombre ?? ''));
+
+  // D2: paginado. Son ~9.600 líneas en total y, aunque un mes suelto cabe de
+  // sobra en una página, el filtro podría ampliarse y el corte de Supabase no
+  // avisa.
+  const data = await leerPaginado<RowLineaPresupuesto>((desde, hasta) =>
+    supabase
+      .from('presupuestos_lineas')
+      .select('cuenta,monto_usd,compania_id,activa')
+      .eq('anio', anio)
+      .eq('mes', mes)
+      .eq('activa', true)
+      .range(desde, hasta),
+  );
+  if (!data) return [];
+
+  return data.map((r) => ({
+    empresa: normalizarEmpresa(nombreDe.get(r.compania_id ?? '')),
+    cuenta: (r.cuenta ?? '').trim(),
+    montoUsd: numeroODefault(r.monto_usd),
+  }));
+}
+
+/**
+ * El presupuesto del periodo, agregado por empresa y concepto.
+ *
+ * CAMBIO DE FUENTE: antes salía de `gyp_historico_cuenta.presupuesto`, que
+ * llenaba el notebook de Fabric cruzando el presupuesto contra el mayor por
+ * `Combinada`. Ese cruce resolvía 3 de 90 llaves y dejaba 17 de los 18
+ * conceptos en 0 —sin dar ningún error—, porque el presupuesto no tiene
+ * dimensión de centro de costo y la llave del mayor sí. El porqué completo
+ * está en `presupuesto.ts`.
+ *
+ * Ahora se lee de `presupuestos_lineas` y se agrega por **cuenta + empresa**,
+ * que es el grano al que el presupuesto existe de verdad. El concepto se
+ * resuelve con el catálogo, y el detalle del mes pondera el reparto cuando una
+ * cuenta cae en más de un concepto.
+ *
+ * Acepta el detalle y el catálogo ya leídos para no releer esas tablas.
+ *
+ * SI LA LECTURA NUEVA NO DA NADA se cae a la columna vieja. No es por prudencia
+ * decorativa: mientras el notebook siga escribiendo esa columna, un mes sin
+ * líneas cargadas en el módulo Presupuestos conserva lo que haya en vez de
+ * mostrar un cero nuevo. El día que la columna desaparezca, esto se borra.
  */
 export async function cargarPresupuesto(
   periodo: string,
   detalle?: FilaHistoricoCuenta[],
+  catalogo?: FilaDimCuenta[],
 ): Promise<PresupuestoFila[]> {
   const filas = detalle ?? (await cargarDetalleCuenta(periodo));
+  const lineas = await cargarLineasPresupuesto(periodo);
+
+  if (lineas.length) {
+    const dim = catalogo ?? (await cargarCatalogo());
+    // El catálogo aporta QUÉ conceptos tiene cada cuenta; el detalle del mes,
+    // CUÁNTO pesa cada uno. Los dos, en ese orden: una cuenta presupuestada sin
+    // movimiento este mes existe en el catálogo y no en el detalle.
+    const conceptos = conceptosPorCuenta([
+      ...dim.map((d) => ({ empresa: d.empresa, cuenta: d.cuenta, concepto: d.concepto })),
+      ...filas.map((f) => ({
+        empresa: f.empresa,
+        cuenta: f.cuenta,
+        concepto: f.concepto,
+        acumulado: f.acumulado,
+      })),
+    ]);
+    const { porConcepto } = repartirEnConceptos(agregarPorCuenta(lineas), conceptos);
+    if (porConcepto.length) return porConcepto;
+  }
+
   const acum = new Map<string, PresupuestoFila>();
   for (const f of filas) {
     const empresa = f.empresa ?? '';
@@ -521,6 +701,20 @@ export async function cargarTasas(periodo: string): Promise<TasaEmpresa[]> {
 
 interface RowResumen {
   periodo: string; empresa: string; concepto: string; monto_usd: number;
+}
+
+/** Fila cruda de `companias` (solo lo que hace falta para nombrar la empresa). */
+interface RowCompania {
+  id: string;
+  nombre: string | null;
+}
+
+/** Fila cruda de `presupuestos_lineas` del mes. */
+interface RowLineaPresupuesto {
+  cuenta: string | null;
+  monto_usd: number | string | null;
+  compania_id: string | null;
+  activa: boolean | null;
 }
 
 /**
@@ -578,7 +772,7 @@ export async function cargarDatosDetalle(periodo: string): Promise<DatosDetalle>
     cargarAlertas(periodo),
   ]);
   const [presupuesto, tasas] = await Promise.all([
-    cargarPresupuesto(periodo, historicoCuenta),
+    cargarPresupuesto(periodo, historicoCuenta, catalogo),
     cargarTasas(periodo),
   ]);
 
@@ -1205,6 +1399,60 @@ export async function cargarFormulas(): Promise<FormulaGuardada[]> {
 }
 
 /**
+ * C9 · Identificador de método de una fórmula propia.
+ *
+ * `proyeccion_regla.metodo` es texto, así que una fórmula se referencia con
+ * `f<id>`. Es lo que permite que una regla apunte a una fórmula sin cambiar el
+ * esquema.
+ */
+export function idMetodoDeFormula(idFormula: number): string {
+  return 'f' + idFormula;
+}
+
+/**
+ * C9 · Las fórmulas propias, como métodos que `calcular()` puede evaluar.
+ *
+ * Esta es la pieza que faltaba. Las fórmulas se creaban, se editaban y se
+ * guardaban, pero NADIE leía `proyeccion_regla.formula_id`: no existía ninguna
+ * conversión de fila de `proyeccion_formula` a método, así que nunca llegaban
+ * al motor y una fórmula daba 0 o no se podía asignar.
+ *
+ * El turno es el 4 (§C): una fórmula puede referirse a otras reglas, así que
+ * se calcula después de la venta y de los métodos de historia.
+ *
+ * Degrada en silencio: si la tabla no responde, devuelve {} y la pantalla sigue
+ * con los métodos de fábrica.
+ */
+export async function cargarFormulasComoMetodos(): Promise<Record<string, Metodo>> {
+  let formulas: FormulaGuardada[];
+  try {
+    formulas = await cargarFormulas();
+  } catch {
+    return {};
+  }
+  const out: Record<string, Metodo> = {};
+  for (const f of formulas) {
+    if (!Array.isArray(f.pasos) || f.pasos.length === 0) continue;
+    const id = idMetodoDeFormula(f.id);
+    out[id] = {
+      id,
+      nombre: f.nombre,
+      // `op`, `base` y `valor` no se usan cuando hay `pasos`; se rellenan con
+      // valores inertes para cumplir el tipo.
+      op: 'sumar',
+      base: 'ninguna',
+      valor: null,
+      invertir: false,
+      orden: 4,
+      fijo: false,
+      pasos: f.pasos,
+      combinar: 'suma',
+    };
+  }
+  return out;
+}
+
+/**
  * Guarda un método del sistema editado desde «Mis fórmulas» en
  * `proyeccion_metodo` (nombre, valor por defecto e invertir). Es `upsert` por
  * `id` para cubrir los métodos de la semilla que aún no están en la base.
@@ -1281,6 +1529,34 @@ export async function guardarFactorMes(
       { periodo, empresa, factor_correccion: factor },
       { onConflict: 'periodo,empresa' },
     )
+    .select('periodo,empresa');
+  if (error) return { ok: false, motivo: 'error', error };
+  return { ok: true };
+}
+
+/**
+ * P2 · Guarda los parámetros editables del mes: días hábiles, transcurridos y
+ * tasa local.
+ *
+ * Antes solo se guardaba el factor. Días y transcurridos se podían editar en
+ * pantalla y se perdían al recargar, y la tasa ni siquiera era editable, así
+ * que una tasa mal extraída no se podía corregir sin tocar la base a mano.
+ *
+ * NO toca `factor_correccion`: lo fija control y tiene su propia función
+ * (`guardarFactorMes`). Mezclarlos aquí arriesgaría pisarlo.
+ */
+export async function guardarParametroMes(
+  periodo: string,
+  empresa: string,
+  campos: { dias?: number; trans?: number; tasa?: number | null },
+): Promise<ResultadoEscritura> {
+  const parche: Record<string, unknown> = { periodo, empresa };
+  if (campos.dias !== undefined) parche.dias_habiles_mes = campos.dias;
+  if (campos.trans !== undefined) parche.dias_transcurridos = campos.trans;
+  if (campos.tasa !== undefined) parche.tasa_local = campos.tasa;
+  const { error } = await supabase
+    .from('proyeccion_parametro')
+    .upsert(parche, { onConflict: 'periodo,empresa' })
     .select('periodo,empresa');
   if (error) return { ok: false, motivo: 'error', error };
   return { ok: true };
@@ -1643,4 +1919,164 @@ export async function cargarUltimaPublicacion(periodo: string): Promise<Corrida 
     mensaje: r.mensaje ?? null,
     lanzadaPor: r.lanzada_por ?? null,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P1 · Mes de trabajo: elección GUARDADA y COMPARTIDA
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// No se deriva del calendario a propósito. Los primeros días de noviembre se
+// sigue cerrando octubre; si la pantalla saltara sola al mes nuevo habría que
+// volver atrás a mano cada vez — o peor, publicar el mes equivocado sin notarlo.
+//
+// Todo degrada en silencio si `proyeccion_config` todavía no existe (la
+// migración 20261030130000 no está aplicada): se conserva el comportamiento de
+// antes en vez de romper la pantalla.
+
+/** Mes de trabajo guardado, con su `rev` para el bloqueo optimista. */
+export interface MesDeTrabajo {
+  periodo: string;
+  rev: number;
+}
+
+/**
+ * Lee el mes de trabajo compartido. Devuelve `null` si la tabla no existe o
+ * está vacía: el llamador conserva entonces su valor por defecto.
+ */
+export async function leerMesDeTrabajo(): Promise<MesDeTrabajo | null> {
+  const { data, error } = await supabase
+    .from('proyeccion_config')
+    .select('periodo_trabajo,rev')
+    .eq('id', 1)
+    .maybeSingle();
+  if (error || !data) return null;
+  const row = data as { periodo_trabajo: string; rev: number };
+  return { periodo: row.periodo_trabajo, rev: row.rev ?? 0 };
+}
+
+/**
+ * Guarda el mes de trabajo para TODO el mundo, con bloqueo optimista por `rev`
+ * (CP-38): si alguien se adelantó, no se pisa su cambio y se devuelve
+ * `conflicto` para que la pantalla recargue.
+ */
+export async function guardarMesDeTrabajo(
+  periodo: string,
+  rev: number,
+  quien?: string,
+): Promise<{ ok: boolean; motivo?: 'conflicto' | 'error'; rev?: number }> {
+  const { data, error } = await supabase
+    .from('proyeccion_config')
+    .update({
+      periodo_trabajo: periodo,
+      rev: rev + 1,
+      actualizado: new Date().toISOString(),
+      actualizado_por: quien ?? null,
+    })
+    .eq('id', 1)
+    .eq('rev', rev)
+    .select('rev');
+  if (error) return { ok: false, motivo: 'error' };
+  if (!data || data.length === 0) return { ok: false, motivo: 'conflicto' };
+  return { ok: true, rev: (data[0] as { rev: number }).rev };
+}
+
+/**
+ * Meses que de verdad tienen datos extraídos, del más reciente al más antiguo.
+ *
+ * Sale de `gyp_historico_mensual`, que es la única fuente que sabe qué meses se
+ * extrajeron. La pantalla ofrece al menos el mes en curso y el anterior, que es
+ * lo que hace falta para cerrar un mes mientras ya empezó el siguiente.
+ */
+export async function cargarMesesConDatos(limite = 12): Promise<string[]> {
+  const filas = await leerPaginado<{ periodo: string }>((desde, hasta) =>
+    supabase.from('gyp_historico_mensual').select('periodo').range(desde, hasta),
+  );
+  if (!filas) return [];
+  return [...new Set(filas.map((f) => f.periodo))].sort().reverse().slice(0, limite);
+}
+
+/**
+ * Arrastra las reglas de un periodo a otro (RPC `clonar_reglas`).
+ *
+ * Un mes sin reglas no se puede proyectar. El criterio es que el mes nuevo
+ * ARRANCA con lo mismo que el anterior y el usuario cambia solo lo que quiera,
+ * no que empiece en blanco.
+ *
+ * No pisa nada: una regla que ya exista en el destino se respeta. Llamarlo dos
+ * veces no deshace ningun ajuste manual.
+ */
+export async function clonarReglas(
+  origen: string,
+  destino: string,
+): Promise<{ ok: boolean; copiadas?: number; yaExistian?: number; motivo?: string }> {
+  const { data, error } = await supabase.rpc('clonar_reglas', {
+    p_origen: origen,
+    p_destino: destino,
+    p_autor: (await autorActual()) ?? 'clonar_reglas',
+  });
+  if (error) return { ok: false, motivo: error.message };
+  const r = (data ?? {}) as { copiadas?: number; ya_existian?: number };
+  return { ok: true, copiadas: r.copiadas ?? 0, yaExistian: r.ya_existian ?? 0 };
+}
+
+/** Lo que hace falta saber de un mes para poder ofrecerlo y describirlo. */
+export interface MesPreparado {
+  periodo: string;
+  /** Ultimo dia con datos. Sin el, la tarjeta no puede decir hasta cuando llega. */
+  corte: string | null;
+  diasHabiles: number | null;
+  transcurridos: number | null;
+}
+
+/**
+ * De qué meses se puede PROYECTAR de verdad, no solo cuáles tienen historia.
+ *
+ * Tener filas en `gyp_historico_mensual` no alcanza: para trabajar un mes hacen
+ * falta sus reglas (`proyeccion_regla`) y sus parámetros (`proyeccion_parametro`,
+ * que trae la tasa, los días hábiles y el corte). Sin reglas no hay nada que
+ * proyectar, y sin tasa la publicación se detiene por la guardia D8.
+ *
+ * Devuelve tambien el corte y los dias de cada mes, no solo si esta listo: la
+ * tarjeta del selector los necesita para decir «mes completo · datos al 30 sep»
+ * en vez de «todavia sin datos», que es lo que salia cuando solo se devolvia un
+ * conjunto de periodos.
+ */
+export async function cargarMesesPreparados(): Promise<Map<string, MesPreparado>> {
+  const [reglas, params] = await Promise.all([
+    leerPaginado<{ periodo: string }>((desde, hasta) =>
+      supabase.from('proyeccion_regla').select('periodo').range(desde, hasta),
+    ),
+    leerPaginado<{
+      periodo: string;
+      corte: string | null;
+      dias_habiles_mes: number | null;
+      dias_transcurridos: number | null;
+    }>((desde, hasta) =>
+      supabase
+        .from('proyeccion_parametro')
+        .select('periodo,corte,dias_habiles_mes,dias_transcurridos')
+        .range(desde, hasta),
+    ),
+  ]);
+  if (!reglas || !params) return new Map();
+  const conReglas = new Set(reglas.map((f) => f.periodo));
+
+  // Una fila por empresa, asi que se consolida: el corte mas atrasado de las
+  // seis es hasta donde se puede decir que el mes esta completo.
+  const porMes = new Map<string, MesPreparado>();
+  for (const f of params) {
+    if (!conReglas.has(f.periodo)) continue;
+    const previo = porMes.get(f.periodo);
+    if (!previo) {
+      porMes.set(f.periodo, {
+        periodo: f.periodo,
+        corte: f.corte,
+        diasHabiles: f.dias_habiles_mes,
+        transcurridos: f.dias_transcurridos,
+      });
+      continue;
+    }
+    if (f.corte && (!previo.corte || f.corte < previo.corte)) previo.corte = f.corte;
+  }
+  return porMes;
 }

@@ -630,11 +630,39 @@ serve(async (req: Request) => {
       if (!t.toca) return json({ ok: true, ejecutada: false, motivo: "fuera_de_horario", log });
     }
 
-    // Periodo: body → config → mes vigente en Caracas.
+    // Periodo: body -> proyeccion_config -> programacion -> mes del calendario.
+    //
+    // `proyeccion_config.periodo_trabajo` es el mes que fijo el equipo en la
+    // aplicacion, y manda. Antes no se consultaba: con `prog.periodo` en NULL
+    // se caia a `periodoVigente()`, o sea al mes del calendario, y el 1 de
+    // noviembre la corrida habria saltado sola a noviembre mientras la
+    // pantalla seguia cerrando octubre. Nadie lo habria visto como un error:
+    // se habria publicado un mes vacio encima del que se estaba trabajando.
+    //
+    // El mes NO avanza solo. Avanza cuando alguien lo cambia en la aplicacion.
+    let periodoConfig: string | null = null;
+    {
+      const { data: cfg, error: eCfg } = await db
+        .from("proyeccion_config")
+        .select("periodo_trabajo")
+        .eq("id", 1)
+        .maybeSingle();
+      // Si la tabla aun no existe se sigue con las fuentes de antes; cualquier
+      // otro error se registra, porque caer al calendario en silencio es justo
+      // lo que se quiere evitar.
+      if (eCfg) log.push(`aviso: no se pudo leer proyeccion_config (${eCfg.message}).`);
+      else periodoConfig = (cfg as { periodo_trabajo: string } | null)?.periodo_trabajo ?? null;
+    }
     const periodo: string =
       (typeof body.periodo === "string" && body.periodo) ||
+      periodoConfig ||
       prog.periodo ||
       periodoVigente(zona);
+    if (!periodoConfig && !prog.periodo) {
+      log.push(
+        `aviso: sin mes de trabajo fijado; se usa el del calendario (${periodo}).`,
+      );
+    }
     log.push(`periodo de trabajo: ${periodo} (zona ${zona})`);
 
     // 1. GUARDIA DE SOLAPAMIENTO (CP-56 #6 / R-27.7).
@@ -755,9 +783,25 @@ serve(async (req: Request) => {
     if (dimCuenta) {
       catalogo = new Set(dimCuenta);
     } else {
-      const { data: dc } = await db.from("dim_cuenta").select("combinada");
-      // Catálogo vacío = aún no cargado por Fabric: no hay contra qué validar.
-      if (dc && dc.length) catalogo = new Set(dc.map((r: { combinada: string }) => r.combinada));
+      // D2: PAGINADO. Supabase corta en 1.000 filas y no avisa. dim_cuenta va
+      // por ~8.800: sin paginar, el checklist veia 1.000 cuentas y declaraba
+      // huerfanas las otras 7.800, bloqueando la publicacion por un catalogo
+      // truncado y no por un problema real.
+      const dc: { combinada: string }[] = [];
+      for (let desde = 0; ; desde += 1000) {
+        const { data: pagina, error: eCat } = await db
+          .from("dim_cuenta")
+          .select("combinada")
+          .range(desde, desde + 999);
+        // Un fallo de lectura NO es un catalogo vacio: dejarlo pasar en silencio
+        // desactivaria la validacion justo cuando menos hay que confiar en ella.
+        if (eCat) throw new Error("No se pudo leer dim_cuenta: " + eCat.message);
+        if (!pagina || pagina.length === 0) break;
+        dc.push(...(pagina as { combinada: string }[]));
+        if (pagina.length < 1000) break;
+      }
+      // Catalogo vacio = aun no cargado por Fabric: no hay contra que validar.
+      if (dc.length) catalogo = new Set(dc.map((r) => r.combinada));
     }
 
     const items = checklistMinimo(filas, periodo, catalogo);

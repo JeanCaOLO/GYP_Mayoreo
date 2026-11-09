@@ -9,11 +9,27 @@ import {
   type AgregadoEmpresa,
 } from './engine';
 import { CIFRAS_VALIDADAS, EMPRESAS } from './seed';
-import { construirFilasEscenarios } from './salida';
+import {
+  construirFilasEscenarios,
+  datosDelCorte,
+  fusionarPorCombinada,
+} from './salida';
+import { checklistPublicacion } from './checklist';
+import { desglosarRentaBrutaTodas } from './components/pruebaContable';
+import { aplicarHistoriaPorCuenta, type HistoriaDeCuenta } from './destino';
 import {
   construirDesdeSemilla,
   cargarDesdeSupabase,
   cargarDatosDetalle,
+  cargarMesesConDatos,
+  cargarMesesPreparados,
+  type MesPreparado,
+  clonarReglas,
+  cargarFormulasComoMetodos,
+  leerMesDeTrabajo,
+  guardarMesDeTrabajo,
+  guardarParametroMes,
+  suscribirCambios,
   ensamblarReglas,
   publicarViaEdge,
   refrescarDesdeFabric,
@@ -38,9 +54,13 @@ import {
   type CambiosProgramacion,
   type Corrida,
 } from './data';
+import { mesesSeleccionables, hoyISO } from './meses';
 import SelloFrescura from './components/SelloFrescura';
 import KpiHeader from './components/KpiHeader';
-import PestanaParametros from './components/PestanaParametros';
+import PestanaParametros, {
+  estadoDelPeriodo,
+  type EstadoMes,
+} from './components/PestanaParametros';
 import PestanaReglas, { type Override, type NuevaRegla } from './components/PestanaReglas';
 import PestanaResultado from './components/PestanaResultado';
 import PestanaTablaSalida from './components/PestanaTablaSalida';
@@ -49,7 +69,7 @@ import PestanaAlertas from './components/PestanaAlertas';
 import PestanaMisFormulas from './components/PestanaMisFormulas';
 import TrazaModal from './components/TrazaModal';
 import type { Traza } from './components/traza';
-import type { FilaHistoricoCuenta } from './capas';
+import type { FilaHistoricoCuenta, FilaDimCuenta } from './capas';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Formato y constantes de pestañas
@@ -86,12 +106,21 @@ export default function ProyeccionGypPage() {
   const [metBorrados, setMetBorrados] = useState<string[]>([]);
   const [overrides, setOverrides] = useState<Record<string, Override>>({});
   const [nuevas, setNuevas] = useState<NuevaRegla[]>([]);
+  // P1 · Meses que de verdad tienen datos extraídos, y el `rev` del mes de
+  // trabajo guardado (para el bloqueo optimista al cambiarlo).
+  const [mesesConDatos, setMesesConDatos] = useState<string[]>([]);
+  const [mesesPreparados, setMesesPreparados] = useState<Map<string, MesPreparado>>(new Map());
+  const [revMes, setRevMes] = useState(0);
+  // C9 · Formulas propias convertidas a metodos (ver cargarFormulasComoMetodos).
+  const [metodosFormula, setMetodosFormula] = useState<Record<string, Metodo>>({});
   const [publicando, setPublicando] = useState(false);
 
   // Presupuesto del periodo (para Comparar, CP-45) y traza «¿Por qué?» (CP-35).
   const [presupuesto, setPresupuesto] = useState<PresupuestoFila[]>([]);
   // Detalle por cuenta del mes: cuentas que ofrece «+ Agregar regla».
   const [detalleCuenta, setDetalleCuenta] = useState<FilaHistoricoCuenta[]>([]);
+  // P12 · El catálogo, para que el checklist pueda validar las Combinadas.
+  const [catalogo, setCatalogo] = useState<FilaDimCuenta[]>([]);
   // Alertas de revisión del catálogo del periodo (CP-34, pestaña Alertas).
   const [alertas, setAlertas] = useState<Alerta[]>([]);
   // Actualización programada (CP-56, pestaña Parámetros) y última publicación.
@@ -103,12 +132,29 @@ export default function ProyeccionGypPage() {
 
   const kk = (empresa: string, concepto: string) => empresa + '|' + concepto;
 
+  /**
+   * C11 · Clave UNICA de una regla base.
+   *
+   * Antes se usaba `empresa|concepto`, que NO es unica: un concepto puede tener
+   * su regla principal mas reglas adicionales (CP-22). Las dos compartian clave,
+   * asi que editar o eliminar la adicional arrastraba a la del concepto, y al
+   * reves. Ahora manda el `id` de la base; sin id (reglas de la semilla, que
+   * solo viven en pantalla) se usa la posicion, que dentro de una misma carga
+   * tambien es unica.
+   *
+   * Los componentes tratan `key` como identificador opaco: no lo parsean.
+   */
+  const claveDe = (r: { id?: number }, i: number) => (r.id != null ? 'b' + r.id : 'i' + i);
+
   // ── Métodos efectivos (fábrica + propios − borrados) ──
   const metodos = useMemo<Record<string, Metodo>>(() => {
-    const m: Record<string, Metodo> = { ...data.metodos, ...metodosUser };
+    // C9 · Las formulas propias entran como metodos mas (`f<id>`), para que una
+    // regla con `formula_id` las pueda usar. Van las ultimas, pero no colisionan
+    // con nada: ningun metodo de fabrica empieza por 'f' seguido de digitos.
+    const m: Record<string, Metodo> = { ...data.metodos, ...metodosUser, ...metodosFormula };
     metBorrados.forEach((k) => delete m[k]);
     return m;
-  }, [data.metodos, metodosUser, metBorrados]);
+  }, [data.metodos, metodosUser, metBorrados, metodosFormula]);
 
   // Presupuesto del mes por empresa|concepto (lo usa el método «presupuesto»).
   const pptoPorConcepto = useMemo(() => {
@@ -122,12 +168,13 @@ export default function ProyeccionGypPage() {
     const ensambladas = ensamblarReglas(data.reglasBase, data.series);
     const out: Regla[] = [];
     ensambladas.forEach((r, i) => {
-      const o = overrides[kk(r.empresa, r.concepto)] || {};
+      const clave = claveDe(data.reglasBase[i] ?? {}, i);
+      const o = overrides[clave] || {};
       // Borrada en pantalla, o borrada en la base y no restaurada (CP-31).
       if (o.borrada ?? data.reglasBase[i]?.eliminada) return;
       out.push({
         ...r,
-        key: kk(r.empresa, r.concepto),
+        key: clave,
         metodo: o.metodo || r.metodo,
         valor: o.valor !== undefined ? o.valor : r.valor,
         n: o.n !== undefined ? o.n : r.n,
@@ -142,6 +189,7 @@ export default function ProyeccionGypPage() {
       });
     });
     nuevas.forEach((x, i) => {
+      if (x.borrada) return; // P6 · borrada logicamente: fuera del calculo
       const sc = data.series[kk(x.empresa, x.concepto)] || { a: 0, s: [] };
       out.push({
         key: 'n' + i,
@@ -167,13 +215,104 @@ export default function ProyeccionGypPage() {
         presupuesto: pptoPorConcepto.get(kk(x.empresa, x.concepto)) ?? null,
       });
     });
+
+    // ── C1 · Cada cuenta con SU historia, y el concepto estima «el resto» ──
+    //
+    // El defecto: una regla de nivel 'cuenta' recibía `data.series[empresa|
+    // concepto]`, es decir la historia del CONCEPTO ENTERO. Abrir Gastos Varios
+    // de Beval en 5 cuentas con «Lo típico» daba 74.414 en CADA cuenta —el
+    // concepto completo, cinco veces— y el concepto seguía estimando sus 74.414
+    // encima. El Semi Neto de Beval pasaba de 45.934 a −326.135.
+    //
+    // La corrección es la que ya estaba diseñada en destino.ts (CP-21) y nunca
+    // se conectó: cada cuenta usa su propia serie de `gyp_historico_cuenta`, y
+    // el concepto estima `concepto − Σ cuentas con regla propia`, de modo que
+    // «reglas por cuenta + resto» vuelve a sumar el total del concepto.
+    //
+    // Las reglas ADICIONALES (CP-22) no entran aquí: se suman al concepto y no
+    // descuentan historia. `insumosDelRestoDeReglas` ya las distingue por nivel.
+    // La lógica vive en `aplicarHistoriaPorCuenta` (destino.ts), fuera del
+    // componente, para que se pueda probar sola: aquí dentro no habría forma de
+    // cubrirla con un test (el proyecto no tiene montaje de componentes).
+    const historia = new Map<string, HistoriaDeCuenta>();
+    detalleCuenta.forEach((f) => {
+      historia.set(f.combinada, {
+        combinada: f.combinada,
+        serie: (f.meses ?? []).map((v) => (v == null ? NaN : v)),
+        acum: f.acumulado ?? 0,
+      });
+    });
+    aplicarHistoriaPorCuenta(out, historia, (r) => metodos[r.metodo]?.op ?? 'promedio');
+
     return out;
-  }, [data.reglasBase, data.series, overrides, nuevas, pptoPorConcepto]);
+  }, [data.reglasBase, data.series, overrides, nuevas, pptoPorConcepto, detalleCuenta, metodos]);
+
+  // ── C3 · Datos del corte para el causado por días calendario (§E) ──
+  //
+  // Sin ellos, `llevarACausado` devuelve el proyectado SIN prorratear: Gastos
+  // Varios de Beval con «Lo típico» al 7-oct causaba 85.224 en vez de
+  // 85.224 × 7 ÷ 31 = 19.244. El motor ya los aceptaba; la pantalla no los
+  // pasaba, así que el modo 'calendario' caía siempre a su respaldo.
+  //
+  // `datosDelCorte` vive en salida.ts y lo comparten esta pantalla y la corrida
+  // programada: si cada una lo calculara por su lado, la publicación manual y la
+  // programada acabarían dando causados distintos.
+  const { diaDelCorte, diasDelMes } = useMemo(
+    () => datosDelCorte(data.periodo, data.corte),
+    [data.corte, data.periodo],
+  );
+
+  // ── P1 · Tarjetas de «Sobre qué mes trabajas» ──
+  //
+  // Una por mes CON DATOS, de la más reciente a la más antigua. Antes la lista
+  // llegaba vacía y el componente caía a mostrar solo el mes vigente, con el
+  // aviso «la lista completa se tomará de gyp_historico_mensual»: la promesa
+  // estaba escrita en pantalla y nadie la había conectado.
+  //
+  // Los días hábiles y el corte solo se conocen del mes vigente (vienen de
+  // `proyeccion_parametro`, que guarda un único periodo); los demás meses se
+  // muestran como terminados, que es lo que son.
+  const mesesParaElegir = useMemo<EstadoMes[]>(() => {
+    const diasV = EMPRESAS.map((e) => params[e]?.dias).find((d) => d != null) ?? null;
+    const transV = EMPRESAS.map((e) => params[e]?.trans).find((t) => t != null) ?? null;
+    const conDatos = new Set(mesesConDatos);
+    // Solo el mes en curso y el anterior (mas el fijado, si quedo fuera). La
+    // lista NO sale de los meses con datos: `gyp_historico_mensual` guarda diez
+    // meses y ofrecerlos todos invita a trabajar sobre un mes que no tiene ni
+    // reglas ni tasa.
+    return mesesSeleccionables(hoyISO(), data.periodo).map((m) => {
+      if (m === data.periodo) {
+        return estadoDelPeriodo(m, data.corte, data.fuente, diasV, transV);
+      }
+      // Un mes solo esta listo si tiene reglas Y parametros. Con historia pero
+      // sin ellos se muestra como «todavia sin datos», que es la verdad: no se
+      // puede proyectar ni publicar.
+      // Un mes solo esta listo si tiene reglas Y parametros.
+      const prep = mesesPreparados.get(m);
+      if (!conDatos.has(m) || !prep) {
+        return { periodo: m, corte: null, fase: 'sin_datos' as const };
+      }
+      // Con su corte real se describe igual que el mes vigente: un mes cerrado
+      // sale «mes completo · datos al 30 sep». Antes se pasaba `corte: null` y
+      // `fraseEstadoMes` leia eso como «todavia sin datos» aunque la fase dijera
+      // lo contrario, asi que un mes preparado se veia como vacio.
+      return estadoDelPeriodo(m, prep.corte, 'db', prep.diasHabiles, prep.transcurridos);
+    });
+  }, [mesesConDatos, mesesPreparados, data.periodo, data.corte, data.fuente, params]);
 
   // ── Cálculo de los DOS escenarios (§H). La cabecera de KPIs necesita ambos. ──
   const escenarios = useMemo(
-    () => calcularEscenarios({ reglas, metodos, params, empresas: EMPRESAS, gn }),
-    [reglas, metodos, params, gn],
+    () =>
+      calcularEscenarios({
+        reglas,
+        metodos,
+        params,
+        empresas: EMPRESAS,
+        gn,
+        diaDelCorte,
+        diasDelMes,
+      }),
+    [reglas, metodos, params, gn, diaDelCorte, diasDelMes],
   );
   const { proyeccion, causado } = escenarios;
   const val = proyeccion.val;
@@ -199,7 +338,15 @@ export default function ProyeccionGypPage() {
       const rs = reglas.map((r) => (r.key === key ? { ...r, ...definidos } : r));
       const i = rs.findIndex((r) => r.key === key);
       if (i < 0) return null;
-      const esc = calcularEscenarios({ reglas: rs, metodos, params, empresas: EMPRESAS, gn });
+      const esc = calcularEscenarios({
+        reglas: rs,
+        metodos,
+        params,
+        empresas: EMPRESAS,
+        gn,
+        diaDelCorte,
+        diasDelMes,
+      });
       const emp = rs[i].empresa;
       return {
         proy: esc.proyeccion.val[i] ?? 0,
@@ -208,7 +355,7 @@ export default function ProyeccionGypPage() {
         snCaus: esc.causado.agg[emp]?.sn ?? 0,
       };
     },
-    [reglas, metodos, params, gn],
+    [reglas, metodos, params, gn, diaDelCorte, diasDelMes],
   );
 
   // Reglas eliminadas (borrado lógico) para el pie con «Restaurar» (CP-31).
@@ -216,21 +363,34 @@ export default function ProyeccionGypPage() {
     const base = ensamblarReglas(data.reglasBase, data.series);
     const borradas = new Set(Object.keys(overrides).filter((k) => overrides[k]?.borrada));
     // Las borradas en la base siguen en el pie hasta que se restauren.
-    data.reglasBase.forEach((r) => {
-      const k = kk(r.empresa, r.concepto);
+    data.reglasBase.forEach((r, i) => {
+      const k = claveDe(r, i);
       if (r.eliminada && overrides[k]?.borrada !== false) borradas.add(k);
     });
-    return [...borradas]
-      .map((k) => {
-        const r = base.find((x) => kk(x.empresa, x.concepto) === k);
-        return {
-          key: k,
-          empresa: r?.empresa ?? k.split('|')[0],
-          concepto: r?.concepto ?? k.split('|')[1],
-          combinada: r?.combinada ?? k,
-        };
-      });
-  }, [overrides, data.reglasBase, data.series]);
+    // P6 · Las reglas NUEVAS borradas tambien van al pie con «Restaurar».
+    const deNuevas = nuevas
+      .map((x, i) => ({ x, i }))
+      .filter(({ x }) => x.borrada)
+      .map(({ x, i }) => ({
+        key: 'n' + i,
+        empresa: x.empresa,
+        concepto: x.concepto,
+        combinada: x.combinada,
+      }));
+
+    const indiceDe = new Map<string, number>();
+    data.reglasBase.forEach((r, i) => indiceDe.set(claveDe(r, i), i));
+    return [...deNuevas, ...[...borradas].map((k) => {
+      const i = indiceDe.get(k);
+      const r = i === undefined ? undefined : base[i];
+      return {
+        key: k,
+        empresa: r?.empresa ?? '',
+        concepto: r?.concepto ?? '',
+        combinada: r?.combinada ?? k,
+      };
+    })];
+  }, [overrides, data.reglasBase, data.series, nuevas]);
 
   const tot = useCallback(
     (k: keyof AgregadoEmpresa) => EMPRESAS.reduce((a, e) => a + (agg[e]?.[k] || 0), 0),
@@ -240,9 +400,54 @@ export default function ProyeccionGypPage() {
   // ── Carga desde Supabase. Si es manual, primero dispara la extracción de
   //    Fabric (Edge Function refrescar-proyeccion-fabric) y luego recarga lo que
   //    quedó en Supabase. ──
+/**
+   * Recarga el NUCLEO de datos de un periodo: acumulado, serie, corte y
+   * parametros (tasa, dias habiles, factor).
+   *
+   * Existe aparte de `traer` porque `traer` saca el mes de
+   * `proyeccion_config`, y al elegir un mes hay que cargar EL QUE SE ELIGIO,
+   * sin esperar a que se guarde en la base ni arriesgarse a leer el anterior.
+   */
+  const recargarPeriodo = useCallback(
+    async (periodo: string) => {
+      const seed = construirDesdeSemilla();
+      seed.periodo = periodo;
+      try {
+        const nuevo = await cargarDesdeSupabase(periodo, seed);
+        setData(nuevo);
+        setParams(nuevo.params);
+        return nuevo;
+      } catch {
+        setData((d) => ({ ...d, periodo }));
+        addToast('error', `No hay extraccion de ${periodo} en la base.`);
+        return null;
+      }
+    },
+    [addToast],
+  );
+
   const traer = useCallback(
     async (manual: boolean) => {
       const seed = construirDesdeSemilla();
+
+      // P1 · El mes de trabajo sale de la configuración COMPARTIDA, no del
+      // calendario ni de la constante de la semilla. Si la tabla todavía no
+      // existe, se conserva el de la semilla y la pantalla sigue funcionando.
+      const guardado = await leerMesDeTrabajo();
+      if (guardado) {
+        seed.periodo = guardado.periodo;
+        setRevMes(guardado.rev);
+      }
+      // Meses que de verdad tienen datos, para las tarjetas de «Sobre qué mes
+      // trabajas». Degrada a lista vacía: el componente cae a mostrar solo el
+      // mes vigente, que es lo que hacía antes.
+      cargarMesesConDatos().then(setMesesConDatos).catch(() => setMesesConDatos([]));
+      cargarMesesPreparados()
+        .then(setMesesPreparados)
+        .catch(() => setMesesPreparados(new Map()));
+      // C9 · Las formulas propias entran como metodos mas, para que una regla
+      // con `formula_id` las pueda usar. Sin esto nunca llegaban al motor.
+      cargarFormulasComoMetodos().then(setMetodosFormula).catch(() => setMetodosFormula({}));
 
       // Paso 1 (solo manual): pedirle al backend que consulte Fabric y escriba.
       if (manual) {
@@ -264,6 +469,11 @@ export default function ProyeccionGypPage() {
         const nuevo = await cargarDesdeSupabase(seed.periodo, seed);
         setData(nuevo);
         setParams(nuevo.params);
+        // C10: las reglas nuevas que YA se guardaron (tienen id) vuelven dentro
+        // de `nuevo.reglasBase`. Si siguieran tambien en `nuevas`, cada una
+        // apareceria DOS veces: en los KPIs y en lo publicado. Se conservan solo
+        // las que no llegaron a persistirse, para no perder trabajo del usuario.
+        setNuevas((prev) => prev.filter((x) => x.id == null));
         if (manual)
           addToast(
             'success',
@@ -282,6 +492,27 @@ export default function ProyeccionGypPage() {
     traer(false);
   }, [traer]);
 
+  /**
+   * P9 · Cambios de otras personas, en vivo.
+   *
+   * `suscribirCambios` estaba escrita y documentada (CP-54) y no la llamaba
+   * nadie: había que recargar la página para ver lo que otro acababa de
+   * guardar. Dos personas trabajando el mismo mes se pisaban sin enterarse.
+   *
+   * El eco propio se ignora (`esEcoPropio`): el cambio ya se aplicó local y
+   * recargar por él provocaría un parpadeo en cada tecla.
+   */
+  useEffect(() => {
+    const cortar = suscribirCambios(data.periodo, {
+      onCualquiera: (c) => {
+        if (c.esEcoPropio) return;
+        traer(false);
+        addToast('info', 'Otra persona cambió algo de este mes: pantalla actualizada.');
+      },
+    });
+    return cortar;
+  }, [data.periodo, traer, addToast]);
+
   // ── Carga del detalle del periodo (presupuesto para Comparar, CP-45). Degrada
   //    en silencio si no hay detalle en la base: Comparar muestra el presupuesto
   //    como «—». ──
@@ -293,6 +524,7 @@ export default function ProyeccionGypPage() {
           setPresupuesto(d.presupuesto);
           setAlertas(d.alertas);
           setDetalleCuenta(d.historicoCuenta);
+          setCatalogo(d.catalogo);
         }
       })
       .catch(() => {
@@ -300,6 +532,7 @@ export default function ProyeccionGypPage() {
           setPresupuesto([]);
           setAlertas([]);
           setDetalleCuenta([]);
+          setCatalogo([]);
         }
       });
     return () => {
@@ -370,7 +603,7 @@ export default function ProyeccionGypPage() {
   // ── Persistencia de reglas (CP-37/38): cada cambio se escribe en
   //    proyeccion_regla con bloqueo optimista por `rev`. Las reglas de la semilla
   //    (sin `id`) solo cambian en pantalla. ──
-  const baseDe = (key: string) => data.reglasBase.find((r) => kk(r.empresa, r.concepto) === key);
+  const baseDe = (key: string) => data.reglasBase.find((r, i) => claveDe(r, i) === key);
 
   const fijarRev = (id: number, rev: number | undefined) => {
     if (rev === undefined) return;
@@ -445,7 +678,9 @@ export default function ProyeccionGypPage() {
     if (/^n\d+$/.test(key)) {
       const i = +key.slice(1);
       const x = nuevas[i];
-      setNuevas((prev) => prev.filter((_, j) => j !== i));
+      // P6 · Borrado LOGICO: se marca, no se quita. Asi aparece en el pie con
+      // «Restaurar», igual que las de la base. Antes se perdia para siempre.
+      setNuevas((prev) => prev.map((y, j) => (j === i ? { ...y, borrada: true } : y)));
       if (x?.id != null) eliminarReglaDb(x.id, x.rev ?? 0).then((r) => avisarEscritura(r, 'la regla'));
     } else {
       setOverrides((prev) => ({ ...prev, [key]: { ...prev[key], borrada: true } }));
@@ -458,6 +693,11 @@ export default function ProyeccionGypPage() {
     }
   };
   const restaurarRegla = (key: string) => {
+    if (/^n\d+$/.test(key)) {
+      const i = +key.slice(1);
+      setNuevas((prev) => prev.map((y, j) => (j === i ? { ...y, borrada: false } : y)));
+      return;
+    }
     setOverrides((prev) => ({ ...prev, [key]: { ...prev[key], borrada: false } }));
     const b = baseDe(key);
     if (b?.id != null)
@@ -467,7 +707,27 @@ export default function ProyeccionGypPage() {
       });
   };
 
+  /**
+   * P7 · Restablecer descarta TODO el trabajo guardado y vuelve a la semilla.
+   *
+   * Antes lo hacía sin preguntar y el aviso decía «al estado validado por
+   * control», que es engañoso: la semilla es la foto del 7-oct, no lo que esté
+   * validado hoy. Alguien que leyera ese texto podía pulsarlo creyendo que
+   * recuperaba algo bueno, y perdía su trabajo del mes.
+   *
+   * Ahora pide confirmación DOS veces —la segunda dice exactamente qué se
+   * pierde— y el aviso ya no promete validación.
+   */
   const restablecer = () => {
+    if (!window.confirm(
+      'Restablecer descarta TODAS las reglas, métodos y parámetros de esta ' +
+      'pantalla y vuelve a la foto de partida. ¿Seguro?',
+    )) return;
+    if (!window.confirm(
+      'Última comprobación: se perderá el trabajo del mes que no esté ' +
+      'publicado. ¿Restablecer de todos modos?',
+    )) return;
+
     const seed = construirDesdeSemilla();
     setData(seed);
     setParams(seed.params);
@@ -476,7 +736,7 @@ export default function ProyeccionGypPage() {
     setOverrides({});
     setNuevas([]);
     setGn(9);
-    addToast('info', 'Se restableció todo al estado validado por control.');
+    addToast('info', 'Se restableció todo a la foto de partida (semilla del 7-oct).');
   };
 
   // La creación y el borrado de métodos vivían en la tabla editable de Reglas,
@@ -553,14 +813,73 @@ export default function ProyeccionGypPage() {
       setPresupuesto([]);
       setOverrides({});
       setNuevas([]);
+      // Cambiar de mes NO era solo cambiar la etiqueta: el acumulado, la serie,
+      // el corte y los parametros son POR PERIODO. Antes solo se hacia
+      // `setData({...d, periodo})`, asi que la pantalla decia «mes de trabajo
+      // 2026-09» mientras seguia proyectando con el acumulado de octubre: el
+      // proyectado no se movia ni un dolar y el causado cambiaba un poco, solo
+      // porque el prorrateo mira los dias del mes nuevo. Nada fallaba.
       setData((d) => ({ ...d, periodo: nuevoPeriodo }));
-      addToast('info', `Mes de trabajo fijado en ${nuevoPeriodo} para todos.`);
+      recargarPeriodo(nuevoPeriodo);
+
+      // P1 · Se GUARDA de verdad. Antes esto solo hacía `setData`: el aviso
+      // decía «para todos» y al recargar volvía atrás. Si la tabla de
+      // configuración todavía no existe, el cambio vale para esta sesión y se
+      // dice claramente, en vez de prometer algo que no pasó.
+      // Un mes sin reglas no se puede proyectar: saldria la pantalla vacia y
+      // sin explicacion. En vez de eso se arrastran las del mes vigente, que es
+      // el criterio acordado — el mes nuevo arranca con lo mismo que el anterior
+      // y se cambia solo lo que haga falta.
+      //
+      // Es explicito y queda registrado quien lo hizo: las reglas no aparecen
+      // solas. `clonar_reglas` no pisa nada, asi que repetirlo no borra ajustes.
+      if (!mesesPreparados.has(nuevoPeriodo)) {
+        const anterior = data.periodo;
+        clonarReglas(anterior, nuevoPeriodo).then((r) => {
+          if (!r.ok) {
+            addToast('error', `No se pudieron arrastrar las reglas a ${nuevoPeriodo}: ${r.motivo}`);
+            return;
+          }
+          if (r.copiadas > 0) {
+            addToast('info', `${nuevoPeriodo} arranca con las ${r.copiadas} reglas de ${anterior}.`);
+            // Ya tiene reglas; el corte y los dias llegan en la proxima carga.
+            setMesesPreparados((p) =>
+              new Map(p).set(nuevoPeriodo, {
+                periodo: nuevoPeriodo, corte: null, diasHabiles: null, transcurridos: null,
+              }),
+            );
+          }
+        });
+      }
+
+      guardarMesDeTrabajo(nuevoPeriodo, revMes).then((r) => {
+        if (r.ok) {
+          setRevMes(r.rev ?? revMes + 1);
+          addToast('info', `Mes de trabajo fijado en ${nuevoPeriodo} para todos.`);
+        } else if (r.motivo === 'conflicto') {
+          addToast('error', 'Otra persona cambió el mes de trabajo. Actualiza para ver el suyo.');
+        } else {
+          addToast('info', `Mes cambiado a ${nuevoPeriodo} solo en esta pantalla (no se pudo guardar).`);
+        }
+      });
     },
-    [data.periodo, addToast],
+    [data.periodo, addToast, revMes, mesesPreparados, recargarPeriodo],
   );
 
   // El factor se guarda POR MES (CP-33 / CP-37). Actualiza el estado local y lo
   // persiste vía `guardarFactorMes(periodo, empresa, factor)`.
+  // P2 · Guarda dias, transcurridos y tasa del mes. El factor va aparte
+  // (`factorMes`): lo fija control y no debe pisarse desde aqui.
+  const parametroMes = useCallback(
+    (empresa: string, campos: { dias?: number; trans?: number; tasa?: number | null }) => {
+      setParams((prev) => ({ ...prev, [empresa]: { ...prev[empresa], ...campos } }));
+      guardarParametroMes(data.periodo, empresa, campos).then((r) => {
+        if (!r.ok) addToast('error', `No se pudieron guardar los parametros de ${empresa}.`);
+      });
+    },
+    [data.periodo, addToast],
+  );
+
   const factorMes = useCallback(
     (empresa: string, factor: number) => {
       setParams((prev) => ({ ...prev, [empresa]: { ...prev[empresa], factor } }));
@@ -604,12 +923,59 @@ export default function ProyeccionGypPage() {
   // `soloCausado` ANEXA el escenario 2 a v_proyeccion_final: la Edge Function
   // reemplaza solo (periodo, escenario = 2) y deja intacto el proyectado.
   const publicar = async (soloCausado = false) => {
-    // CP-47 / Req 22.3: la prueba contable gobierna la publicación.
-    if (pruebaMalasCP47.length) {
+    // P12 · La prueba contable se calcula AQUI, no en la pestaña Resultado.
+    //
+    // Antes `pruebaMalasCP47` solo se llenaba cuando esa pestaña estaba montada:
+    // publicar sin haberla abierto saltaba el control por completo. Un control
+    // que depende de qué pestaña miraste no es un control.
+    const desglosesAhora = desglosarRentaBrutaTodas(EMPRESAS, reglas, val, agg);
+    const malas = desglosesAhora.filter((d) => !d.cuadra).map((d) => d.empresa);
+    if (malas.length) {
       addToast(
         'error',
-        `No se publica: la prueba contable de la Renta Bruta no cuadra en ${pruebaMalasCP47.join(', ')}.`,
+        `No se publica: la prueba contable de la Renta Bruta no cuadra en ${malas.join(', ')}.`,
       );
+      return;
+    }
+
+    // P12 · Y el CHECKLIST de publicación (CP-44), que estaba escrito y no se
+    // usaba en ningún sitio. Comprueba las llaves, el catálogo, la FECHA, el
+    // país, la tasa, los duplicados y el cuadre reglas+resto sobre las filas
+    // REALES que se van a publicar.
+    try {
+      const todas = construirFilasEscenarios(data.periodo, {
+        reglas, metodos, params, empresas: EMPRESAS, gn, diaDelCorte, diasDelMes,
+      });
+      const chk = checklistPublicacion(
+        ([1, 2] as const).map((n) => ({
+          proyeccion: n,
+          nombre: n === 1 ? 'Proyectado' : 'Causado',
+          filas: fusionarPorCombinada(todas.filter((f) => f.proyeccion === n)),
+          desgloses: desglosesAhora,
+          // PENDIENTE: siempre vacio, asi que la comprobacion 8 del checklist
+          // (CP-21: reglas + resto = concepto) no se evalua NUNCA y pasa
+          // siempre. No es que cuadre: es que no se mira. Alimentarla con
+          // `insumosDelResto` la convertiria en una validacion bloqueante
+          // nueva, que es un cambio de comportamiento a decidir aparte.
+          cuadres: [],
+        })),
+        {
+          periodo: data.periodo,
+          empresas: EMPRESAS,
+          // El catálogo sale de dim_cuenta. Vacío = no se puede validar contra
+          // él; la comprobación 3 lo dice en vez de marcar todo como huérfano.
+          dimCuenta: new Set(catalogo.map((d) => d.combinada)),
+        },
+      );
+      if (!chk.puedePublicar) {
+        const fallan = chk.items.filter((i) => !i.ok && i.bloqueante).map((i) => i.titulo);
+        addToast('error', `No se publica. Falla el checklist: ${fallan.join(' · ')}`);
+        return;
+      }
+    } catch (e) {
+      // D8 puede negarse a construir las filas (sin tasa o sin país). Es
+      // exactamente lo que debe impedir publicar, y con su propio mensaje.
+      addToast('error', `No se publica: ${(e as Error).message}`);
       return;
     }
     if (
@@ -636,6 +1002,11 @@ export default function ProyeccionGypPage() {
         params,
         empresas: EMPRESAS,
         gn,
+        // C3: sin estos dos, lo PUBLICADO llevaba el causado sin prorratear
+        // aunque la pantalla lo mostrara bien. La tabla que va a Power BI y lo
+        // que se ve dejaban de coincidir.
+        diaDelCorte,
+        diasDelMes,
       });
       const filas = soloCausado ? todas.filter((f) => f.proyeccion === 2) : todas;
       const res = await publicarViaEdge(data.periodo, filas, undefined, soloCausado ? [2] : undefined);
@@ -774,7 +1145,9 @@ export default function ProyeccionGypPage() {
           corte={data.corte}
           fuente={data.fuente}
           onElegirMes={elegirMes}
+          mesesDisponibles={mesesParaElegir}
           onFactorMes={factorMes}
+          onParametroMes={parametroMes}
           programacion={programacion}
           onGuardarProgramacion={guardarProg}
           ultimaPublicacion={ultimaPublicacion}
@@ -808,6 +1181,7 @@ export default function ProyeccionGypPage() {
         <PestanaResultado
           empresas={EMPRESAS}
           agg={agg}
+          aggCausado={causado.agg}
           cifrasValidadas={CIFRAS_VALIDADAS}
           tot={tot}
           reglas={reglas}
@@ -822,6 +1196,11 @@ export default function ProyeccionGypPage() {
       {tab === 'salida' && (
         <PestanaTablaSalida
           reglas={reglas}
+          metodos={metodos}
+          empresas={EMPRESAS}
+          gn={gn}
+          diaDelCorte={diaDelCorte}
+          diasDelMes={diasDelMes}
           val={val}
           valCausado={causado.val}
           params={params}
@@ -847,8 +1226,12 @@ export default function ProyeccionGypPage() {
       )}
 
       {tab === 'alertas' && (
+        /* P13 · El contador cuenta ALERTAS del catalogo, no avisos de reglas.
+           El `|| avisos.length` hacia que, sin alertas, la pestana mostrara un
+           numero que no tenia nada que ver: eran Combinadas duplicadas entre
+           reglas, otra cosa distinta. */
         <PestanaAlertas
-          contador={alertas.length || avisos.length}
+          contador={alertas.length}
           alertas={alertas}
           periodo={data.periodo}
         />

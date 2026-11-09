@@ -159,6 +159,15 @@ function baseV1aV2(b) {
 * el escenario proyectado). Esto es el puente que mantiene la aritmética idéntica.
 */
 function metodoV1aV2(m) {
+	if (m.pasos && m.pasos.length) return {
+		id: m.id,
+		nombre: m.nombre,
+		orden: m.orden,
+		causadoDefault: "calendario",
+		deFabrica: false,
+		pasos: m.pasos,
+		combinar: m.combinar ?? "suma"
+	};
 	return {
 		id: m.id,
 		nombre: m.nombre,
@@ -215,7 +224,7 @@ function evaluarPaso(paso, acc, valorEfectivo, ctx) {
 			return sg * (sumaN(r.serie, n) / sumaVenta) * (ctx.venta[r.empresa] || 0);
 		}
 		case "derivada": return -ctx.cargoFijoDemas(r.empresa);
-		case "componentes": return acc ?? 0;
+		case "componentes": return sg * (acc !== void 0 ? acc : resolverBaseRef(paso.base, ctx));
 		case "porcentaje":
 		case "multiplicar": return sg * (v * (acc !== void 0 ? acc : resolverBaseRef(paso.base, ctx)));
 		case "sumar": return sg * ((acc !== void 0 ? acc : resolverBaseRef(paso.base, ctx)) + v);
@@ -231,6 +240,11 @@ function evaluarPaso(paso, acc, valorEfectivo, ctx) {
 */
 function evaluarMetodoV2(m, ctx) {
 	const unSoloPaso = m.pasos.length === 1;
+	if (m.combinar === "suma" && !unSoloPaso) {
+		let total = 0;
+		for (const paso of m.pasos) total += evaluarPaso(paso, void 0, paso.valor, ctx);
+		return total;
+	}
 	let acc;
 	for (let i = 0; i < m.pasos.length; i++) {
 		const paso = m.pasos[i];
@@ -299,8 +313,11 @@ function calcular({ reglas: R, metodos: M, params, empresas, gn, escenario = "PR
 		}
 	};
 	const refConcepto = (empresa, concepto) => {
-		const j = R.findIndex((x) => x.empresa === empresa && x.concepto === concepto);
-		return j >= 0 && hecho[j] ? val[j] : 0;
+		let total = 0;
+		R.forEach((x, j) => {
+			if (x.empresa === empresa && x.concepto === concepto && hecho[j]) total += val[j];
+		});
+		return total;
 	};
 	const cargoFijoDemas = (empresa) => {
 		let cf = 0;
@@ -335,12 +352,13 @@ function calcular({ reglas: R, metodos: M, params, empresas, gn, escenario = "PR
 				res = llevarACausado(res, r.causado ?? "igual", params[r.empresa], {
 					esVentaODerivada,
 					diaDelCorte,
-					diasDelMes
+					diasDelMes,
+					asentadoAlCorte: r.acum
 				});
 			}
 			val[i] = res;
 			hecho[i] = true;
-			if (r.concepto === "Ventas" || m.op === "derivada") venta[r.empresa] = res;
+			if (r.concepto === "Ventas" || m.op === "derivada") venta[r.empresa] = (venta[r.empresa] ?? 0) + res;
 		});
 		recalcular();
 	}
@@ -393,6 +411,29 @@ function fechaDia1(periodo) {
 }
 "FECHA;Ajuste;Vista;Combinada;Pais;Empresa;Tasa_Mensual;Ajuste_USD;Monto_Local;Monto_USD;CENTRO_COSTO;CUENTA_CONTABLE;Proyeccion".split(";");
 /**
+* C3 · Deriva los datos del corte que necesita el causado por días calendario
+* (§E) a partir del periodo (`'2026-10'`) y del corte (`'2026-10-07'`).
+*
+* FUENTE ÚNICA a propósito: lo usan la pantalla y la corrida programada
+* server-side. Calculado por separado en cada sitio, acabarían divergiendo y
+* la publicación manual y la programada darían causados distintos.
+*
+* Se parsea a mano, NO con `new Date('2026-10-07')`: ese constructor lee la
+* cadena como UTC y en Caracas (UTC−4) `getDate()` devolvería el día anterior,
+* corriendo todo el causado un día.
+*/
+function datosDelCorte(periodo, corte) {
+	const c = (corte ?? "").split("-").map(Number);
+	const p = (periodo ?? "").split("-").map(Number);
+	const dia = c[2];
+	const anio = p[0];
+	const mes = p[1];
+	return {
+		diaDelCorte: Number.isFinite(dia) ? dia : void 0,
+		diasDelMes: Number.isFinite(anio) && Number.isFinite(mes) ? new Date(anio, mes, 0).getDate() : void 0
+	};
+}
+/**
 * Construye las `FilaResultado` de los DOS escenarios (CP-01/CP-49): una fila por
 * regla, `proyeccion.val[i]` para el escenario 1 (Proyectado, `proyeccion=1`) y
 * `causado.val[i]` para el escenario 2 (Causado, `proyeccion=2`), alineados por
@@ -417,17 +458,21 @@ function construirFilasEscenarios(periodo, insumos) {
 		diasDelMes
 	});
 	const fecha = fechaDia1(periodo);
+	const sinTasa = [...new Set(reglas.map((r) => r.empresa))].filter((e) => !(typeof params[e]?.tasa === "number" && params[e].tasa !== 0));
+	if (sinTasa.length) throw new Error(`No hay tasa del periodo para ${sinTasa.join(", ")}: Monto_Local saldria en 0 para esas empresas. Carga la tasa en proyeccion_parametro antes de publicar.`);
+	const sinPais = [...new Set(reglas.map((r) => r.empresa))].filter((e) => !PAIS[e]);
+	if (sinPais.length) throw new Error(`Sin pais en el mapa para ${sinPais.join(", ")}: la columna Pais saldria con el nombre de la empresa. Revisa PAIS en engine.ts.`);
 	const filaDe = (r, monto, escenario) => ({
 		periodo,
 		fecha,
 		vista: "GYP",
 		combinada: r.combinada,
-		pais: r.pais || PAIS[r.empresa] || r.empresa,
+		pais: PAIS[r.empresa],
 		empresa: r.empresa,
 		tasa_mensual: llevaTasaMensual(r.empresa) ? r.tasaMensual ?? params[r.empresa]?.tasa ?? null : null,
 		ajuste: 0,
 		ajuste_usd: 0,
-		monto_local: monto * (params[r.empresa]?.tasa || 0),
+		monto_local: monto * params[r.empresa].tasa,
 		monto_usd: monto,
 		centro_costo: r.cc,
 		cuenta_contable: r.cuenta,
@@ -611,9 +656,15 @@ async function cargarInsumos(db, periodo, gn = 9) {
 	if (eRegla) throw new Error("No se pudieron leer las reglas: " + eRegla.message);
 	const reglasBase = (rr ?? []).filter((r) => !r.eliminada);
 	if (reglasBase.length === 0) throw new Error(`sin reglas activas para ${periodo}: no se publica con datos incompletos.`);
-	const { data: hr } = await db.from("gyp_historico_mensual").select("periodo,empresa,concepto,monto_usd,es_venta");
+	const historico = [];
+	for (let desde = 0;; desde += 1e3) {
+		const { data: pagina, error: eHist } = await db.from("gyp_historico_mensual").select("periodo,empresa,concepto,monto_usd,es_venta").range(desde, desde + 999);
+		if (eHist) throw new Error("No se pudo leer la historia mensual: " + eHist.message);
+		if (!pagina || pagina.length === 0) break;
+		historico.push(...pagina);
+		if (pagina.length < 1e3) break;
+	}
 	const series = {};
-	const historico = hr ?? [];
 	if (historico.length) {
 		const prevPeriodos = [...new Set(historico.map((h) => h.periodo))].sort().filter((p) => p < periodo);
 		for (const h of historico) {
@@ -629,47 +680,58 @@ async function cargarInsumos(db, periodo, gn = 9) {
 			}
 		}
 	}
-	const { data: pp } = await db.from("gyp_historico_cuenta").select("empresa,concepto,presupuesto").eq("periodo", periodo);
+	const pp = [];
+	for (let desde = 0;; desde += 1e3) {
+		const { data: pagina, error: ePpto } = await db.from("gyp_historico_cuenta").select("empresa,concepto,presupuesto").eq("periodo", periodo).range(desde, desde + 999);
+		if (ePpto) throw new Error("No se pudo leer el presupuesto: " + ePpto.message);
+		if (!pagina || pagina.length === 0) break;
+		pp.push(...pagina);
+		if (pagina.length < 1e3) break;
+	}
 	const ppto = /* @__PURE__ */ new Map();
-	for (const f of pp ?? []) {
+	for (const f of pp) {
 		const key = f.empresa + "|" + f.concepto;
 		ppto.set(key, (ppto.get(key) ?? 0) + (Number(f.presupuesto) || 0));
 	}
+	const reglas = reglasBase.map((r, i) => {
+		const sc = series[r.empresa + "|" + r.concepto] || {
+			a: 0,
+			s: []
+		};
+		return {
+			key: "r" + i,
+			empresa: r.empresa,
+			concepto: r.concepto,
+			grupo: r.grupo_pl,
+			metodo: r.metodo,
+			valor: r.valor,
+			n: r.n ?? null,
+			nombre: r.nombre ?? null,
+			detalle: r.detalle ?? null,
+			causado: r.causado,
+			escenarios: r.escenarios,
+			nivel: r.nivel,
+			combinada: r.combinada,
+			cc: r.centro_costo,
+			cuenta: r.cuenta_contable,
+			pais: PAIS[r.empresa] || r.empresa,
+			tasaMensual: null,
+			serie: (sc.s || []).map((x) => x == null ? NaN : x),
+			acum: sc.a || 0,
+			nueva: false,
+			presupuesto: ppto.get(r.empresa + "|" + r.concepto) ?? null
+		};
+	});
+	const { diaDelCorte, diasDelMes } = datosDelCorte(periodo, corte);
 	return {
-		reglas: reglasBase.map((r, i) => {
-			const sc = series[r.empresa + "|" + r.concepto] || {
-				a: 0,
-				s: []
-			};
-			return {
-				key: "r" + i,
-				empresa: r.empresa,
-				concepto: r.concepto,
-				grupo: r.grupo_pl,
-				metodo: r.metodo,
-				valor: r.valor,
-				n: r.n ?? null,
-				nombre: r.nombre ?? null,
-				detalle: r.detalle ?? null,
-				causado: r.causado,
-				escenarios: r.escenarios,
-				nivel: r.nivel,
-				combinada: r.combinada,
-				cc: r.centro_costo,
-				cuenta: r.cuenta_contable,
-				pais: PAIS[r.empresa] || r.empresa,
-				tasaMensual: null,
-				serie: (sc.s || []).map((x) => x == null ? NaN : x),
-				acum: sc.a || 0,
-				nueva: false,
-				presupuesto: ppto.get(r.empresa + "|" + r.concepto) ?? null
-			};
-		}),
+		reglas,
 		metodos,
 		params,
 		empresas: EMPRESAS,
 		gn,
-		corte
+		corte,
+		diaDelCorte,
+		diasDelMes
 	};
 }
 //#endregion
@@ -1007,7 +1069,14 @@ serve(async (req) => {
 				log
 			});
 		}
-		const periodo = typeof body.periodo === "string" && body.periodo || prog.periodo || periodoVigente(zona);
+		let periodoConfig = null;
+		{
+			const { data: cfg, error: eCfg } = await db.from("proyeccion_config").select("periodo_trabajo").eq("id", 1).maybeSingle();
+			if (eCfg) log.push(`aviso: no se pudo leer proyeccion_config (${eCfg.message}).`);
+			else periodoConfig = cfg?.periodo_trabajo ?? null;
+		}
+		const periodo = typeof body.periodo === "string" && body.periodo || periodoConfig || prog.periodo || periodoVigente(zona);
+		if (!periodoConfig && !prog.periodo) log.push(`aviso: sin mes de trabajo fijado; se usa el del calendario (${periodo}).`);
 		log.push(`periodo de trabajo: ${periodo} (zona ${zona})`);
 		const limiteColgada = (/* @__PURE__ */ new Date(Date.now() - CORRIDA_COLGADA_MS)).toISOString();
 		await db.from("proyeccion_corrida").update({
@@ -1103,8 +1172,15 @@ serve(async (req) => {
 		let catalogo = null;
 		if (dimCuenta) catalogo = new Set(dimCuenta);
 		else {
-			const { data: dc } = await db.from("dim_cuenta").select("combinada");
-			if (dc && dc.length) catalogo = new Set(dc.map((r) => r.combinada));
+			const dc = [];
+			for (let desde = 0;; desde += 1e3) {
+				const { data: pagina, error: eCat } = await db.from("dim_cuenta").select("combinada").range(desde, desde + 999);
+				if (eCat) throw new Error("No se pudo leer dim_cuenta: " + eCat.message);
+				if (!pagina || pagina.length === 0) break;
+				dc.push(...pagina);
+				if (pagina.length < 1e3) break;
+			}
+			if (dc.length) catalogo = new Set(dc.map((r) => r.combinada));
 		}
 		const items = checklistMinimo(filas, periodo, catalogo);
 		const fallos = items.filter((i) => i.bloqueante && !i.ok);

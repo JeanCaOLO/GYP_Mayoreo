@@ -210,7 +210,6 @@ export default function PestanaAlertas({ contador, alertas = [], periodo = '' }:
   /** Texto de «Copiar filas»: una fila por cuenta por crear, columnas por tabulador, sin encabezado. */
   const textoFilas = useMemo(
     () => porCrear.map((a) => filaPlantilla(a).join('\t')).join('\n'),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [porCrear],
   );
 

@@ -13,7 +13,19 @@
 --
 --   select vault.create_secret('<SERVICE_ROLE_KEY>', 'gyp_cron_key');
 --
--- Para cambiarla después:
+-- Y la URL DE ESTE MISMO proyecto, que es la que el job va a llamar:
+--
+--   select vault.create_secret('https://<ref-del-proyecto>.supabase.co',
+--                              'gyp_functions_url');
+--
+--   -- QA:         https://lhswzvjeuegmnonbemza.supabase.co
+--   -- Productivo: https://laiiyfjxfvilupiccosf.supabase.co
+--
+-- Las dos salen del Vault a propósito: así este archivo sirve igual en QA y en
+-- productivo, y cada base llama a SU función. Con la URL escrita a mano, el
+-- cron de QA publicaba sobre productivo.
+--
+-- Para cambiar cualquiera de las dos después:
 --   select vault.update_secret(
 --     (select id from vault.secrets where name = 'gyp_cron_key'), '<NUEVA_KEY>');
 --
@@ -35,7 +47,16 @@ select cron.schedule(
   '*/5 * * * *',
   $job$
     select net.http_post(
-      url     := 'https://laiiyfjxfvilupiccosf.supabase.co/functions/v1/corrida-programada',
+      -- La URL NO va escrita a mano: sale del Vault del proyecto donde se
+      -- aplique esta migración. Un literal haría que el cron de QA llamara a
+      -- la función de PRODUCCIÓN, que trabaja contra SU propia base (lee
+      -- SUPABASE_URL y SERVICE_ROLE_KEY de su entorno, no los del llamador).
+      -- Si el secreto falta, la concatenación da NULL y net.http_post falla
+      -- de forma ruidosa: preferible a publicar en el proyecto equivocado.
+      url     := (select decrypted_secret
+                    from vault.decrypted_secrets
+                   where name = 'gyp_functions_url')
+                 || '/functions/v1/corrida-programada',
       headers := jsonb_build_object(
                    'Content-Type',  'application/json',
                    'Authorization', 'Bearer ' || (select decrypted_secret

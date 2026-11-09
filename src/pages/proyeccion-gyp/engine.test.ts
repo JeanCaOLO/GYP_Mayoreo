@@ -336,24 +336,43 @@ describe('Oráculo — conteo de los 190 casos que coinciden (CP-43)', () => {
    * por céntimo lo fijan los snapshots de arriba). Esto reproduce el conteo que
    * el aviso en pantalla mostraría: X de 190 coinciden.
    */
-  const contar190 = () => {
-    let coinciden = 0;
-    // Escenario PROYECCIÓN: 95 montos.
-    for (let i = 0; i < 95; i++) {
-      if (proy.hecho[i] && Number.isFinite(proy.val[i])) coinciden++;
-    }
-    // Escenario CAUSADO: 95 montos.
-    for (let i = 0; i < 95; i++) {
-      if (causado.hecho[i] && Number.isFinite(causado.val[i])) coinciden++;
-    }
-    return coinciden;
-  };
+  // ───────────────────────────────────────────────────────────────────────────
+  // C14 · Antes esto NO comparaba contra nada.
+  //
+  // El conteo contaba `Number.isFinite(val[i])`: cualquier número valía como
+  // acierto. Decía 190/190 aunque el motor devolviera cifras equivocadas, con
+  // tal de que fueran números. Era una compuerta que no cerraba.
+  //
+  // Ahora los 190 montos se fijan uno a uno con un snapshot. Si cualquier
+  // arreglo del motor mueve un concepto, el test cae y dice cuál.
+  //
+  // PRIMERA EJECUCIÓN: el snapshot está vacío a propósito — estas cifras no se
+  // escriben a mano. Hay que poblarlo con:
+  //
+  //     npx vitest run engine.test.ts -u
+  //
+  // y REVISAR el diff antes de commitearlo. Es seguro hacerlo contra el estado
+  // actual: con las 95 reglas de partida el motor reproduce la foto validada
+  // por control el 7-oct, y eso ya lo garantizan los snapshots agregados de
+  // más arriba (`semiNeto: 1116184.23` y los totales por empresa). El snapshot
+  // de abajo solo baja esa misma garantía de los 5 agregados a los 190 montos.
+  // ───────────────────────────────────────────────────────────────────────────
+  const montos190 = [
+    ...proy.val.slice(0, 95).map((v) => Math.round(v * 100) / 100),
+    ...causado.val.slice(0, 95).map((v) => Math.round(v * 100) / 100),
+  ];
 
-  it('los 190 casos coinciden → 190/190 (0 movidos)', () => {
-    const coinciden = contar190();
-    const movidos = 190 - coinciden;
-    // Mismo mensaje que CP-43 pediría en consola: "[motor] X de 190 casos coinciden".
-    expect(coinciden, `[motor] ${coinciden} de 190 casos coinciden (${movidos} movidos)`).toBe(190);
+  it('los 190 montos siguen siendo los de la foto del 7-oct', () => {
+    expect(montos190).toHaveLength(190);
+    expect(montos190.every((v) => Number.isFinite(v)), 'hay montos no finitos').toBe(true);
+    expect(montos190).toMatchSnapshot();
+  });
+
+  it('los 190 casos están todos calculados (0 sin resolver)', () => {
+    const sinResolver =
+      proy.hecho.slice(0, 95).filter((h) => !h).length +
+      causado.hecho.slice(0, 95).filter((h) => !h).length;
+    expect(sinResolver, `[motor] ${190 - sinResolver} de 190 casos resueltos`).toBe(0);
   });
 });
 

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { GrupoPL, Metodo, Regla } from '../engine';
 import type { FilaHistoricoCuenta } from '../capas';
 import type { NuevaRegla } from './PestanaReglas';
+import { repartir } from '../destino';
 
 /**
  * «+ Agregar regla» con tres caminos (CP-30, Requirement 18.4):
@@ -50,6 +51,13 @@ interface CuentaCandidata {
   combinada: string;
   cuenta: string;
   cc: string;
+  /**
+   * C8 · Serie y presupuesto de la cuenta. Antes `cuentasDe` los descartaba, que
+   * es justo lo que `repartir` necesita para ponderar: sin ellos, «por historia»
+   * y «por presupuesto» no tenían con qué repartir y caían a partes iguales.
+   */
+  serie?: number[];
+  presupuesto?: number | null;
 }
 
 const combinadaDe = (cuenta: string, cc: string, empresa: string) => `${cuenta}-${cc}-${empresa}`;
@@ -109,7 +117,17 @@ export default function PanelAgregarRegla({
     const vistas = new Map<string, CuentaCandidata>();
     detalleCuenta
       .filter((f) => f.empresa === empresa && f.concepto === concepto)
-      .forEach((f) => vistas.set(f.combinada, { combinada: f.combinada, cuenta: f.cuenta, cc: f.centro_costo }));
+      .forEach((f) =>
+        vistas.set(f.combinada, {
+          combinada: f.combinada,
+          cuenta: f.cuenta,
+          cc: f.centro_costo,
+          // Un mes sin registro va NaN, no 0: el reparto no debe contarlo como
+          // "gastó cero" (trampa 2 del proyecto).
+          serie: (f.meses ?? []).map((v) => (v == null ? NaN : v)),
+          presupuesto: f.presupuesto ?? null,
+        }),
+      );
     return [...vistas.values()].sort((a, b) => a.combinada.localeCompare(b.combinada));
   };
 
@@ -339,6 +357,8 @@ function CaminoRepartir({
   const [monto, setMonto] = useState('0');
   const [modo, setModo] = useState<(typeof REPARTO_MODOS)[number]['id']>('iguales');
   const [seleccion, setSeleccion] = useState<string[]>([]);
+  // Aviso de `repartir` cuando cae a partes iguales por falta de datos (§F).
+  const [avisoReparto, setAvisoReparto] = useState<string | null>(null);
   const { lista, filtrar, filtro } = useBuscadorCuentas(cuentasDe(concepto));
 
   const metodoFijo = metodoPorOp(metodos, 'valor_fijo', 'm_fijo');
@@ -347,15 +367,36 @@ function CaminoRepartir({
   const crear = () => {
     if (!elegidas.length) return;
     const total = +monto || 0;
-    const parte = total / elegidas.length; // reparto en partes iguales (histórico/ppto se afinan en el motor)
-    const regs = elegidas.map((c) =>
+
+    // C8 · Se reparte con `repartir()` (§F, CP-20), que ya existía y no se
+    // llamaba desde ningún sitio. Antes esto era `total / elegidas.length`:
+    // elegir «por historia» o «por presupuesto» no cambiaba nada y el reparto
+    // salía siempre en partes iguales, en silencio.
+    //
+    // `repartir` garantiza que la suma de las partes es EXACTAMENTE el total
+    // redondeado a céntimos (el residuo se ajusta en la última cuenta), y avisa
+    // cuando tuvo que caer a partes iguales por falta de historia o presupuesto.
+    const { destinos, aviso } = repartir(
+      total,
+      elegidas.map((c) => ({
+        combinada: c.combinada,
+        centroCosto: c.cc,
+        cuentaContable: c.cuenta,
+        serie: c.serie,
+        presupuesto: c.presupuesto,
+      })),
+      { criterio: modo, n: 6 },
+    );
+    setAvisoReparto(aviso);
+
+    const regs = destinos.map((d) =>
       plantillaDe(concepto, {
         metodo: metodoFijo,
-        valor: parte,
+        valor: d.montoUsd,
         nivel: 'cuenta',
-        cuenta: c.cuenta,
-        cc: c.cc,
-        combinada: c.combinada,
+        cuenta: d.cuentaContable,
+        cc: d.centroCosto,
+        combinada: d.combinada,
         nombre: `Reparto ${modo} de ${concepto}`,
       }),
     );
@@ -412,6 +453,11 @@ function CaminoRepartir({
         seleccion={seleccion}
         onSeleccion={setSeleccion}
       />
+      {avisoReparto && (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {avisoReparto}
+        </p>
+      )}
       <button
         onClick={crear}
         disabled={!elegidas.length}

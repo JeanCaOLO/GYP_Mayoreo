@@ -16,6 +16,7 @@ import {
   EMPRESAS,
   METODOS_BASE,
   PAIS,
+  datosDelCorte,
   type InsumosMotor,
   type Regla,
   type Metodo,
@@ -116,11 +117,22 @@ export async function cargarInsumos(
   }
 
   // ── Historia mensual → serie + acumulado por cuenta (igual que data.ts) ──
-  const { data: hr } = await db
-    .from('gyp_historico_mensual')
-    .select('periodo,empresa,concepto,monto_usd,es_venta');
+  //
+  // D2: PAGINADO. Supabase corta en 1.000 filas y no avisa; esta tabla ya va por
+  // ~1.300 y crece cada mes. Truncada, la corrida programada publicaria series
+  // incompletas sin dar ningun error: cifras mal en Power BI y nadie sabria por que.
+  const historico: RowHistorico[] = [];
+  for (let desde = 0; ; desde += 1000) {
+    const { data: pagina, error: eHist } = await db
+      .from('gyp_historico_mensual')
+      .select('periodo,empresa,concepto,monto_usd,es_venta')
+      .range(desde, desde + 999);
+    if (eHist) throw new Error('No se pudo leer la historia mensual: ' + eHist.message);
+    if (!pagina || pagina.length === 0) break;
+    historico.push(...(pagina as RowHistorico[]));
+    if (pagina.length < 1000) break;
+  }
   const series: Record<string, SerieCuenta> = {};
-  const historico = (hr ?? []) as RowHistorico[];
   if (historico.length) {
     const periodosOrden = [...new Set(historico.map((h) => h.periodo))].sort();
     const prevPeriodos = periodosOrden.filter((p) => p < periodo);
@@ -137,12 +149,24 @@ export async function cargarInsumos(
   }
 
   // ── Presupuesto del mes por empresa|concepto (método «presupuesto») ──
-  const { data: pp } = await db
-    .from('gyp_historico_cuenta')
-    .select('empresa,concepto,presupuesto')
-    .eq('periodo', periodo);
+  // D2: PAGINADO. gyp_historico_cuenta va por ~1.900 filas en un solo periodo,
+  // asi que sin paginar el metodo «presupuesto» trabajaba con la MITAD del
+  // presupuesto y sin dar ningun error.
+  type FilaPpto = { empresa: string; concepto: string; presupuesto: number | null };
+  const pp: FilaPpto[] = [];
+  for (let desde = 0; ; desde += 1000) {
+    const { data: pagina, error: ePpto } = await db
+      .from('gyp_historico_cuenta')
+      .select('empresa,concepto,presupuesto')
+      .eq('periodo', periodo)
+      .range(desde, desde + 999);
+    if (ePpto) throw new Error('No se pudo leer el presupuesto: ' + ePpto.message);
+    if (!pagina || pagina.length === 0) break;
+    pp.push(...(pagina as FilaPpto[]));
+    if (pagina.length < 1000) break;
+  }
   const ppto = new Map<string, number>();
-  for (const f of (pp ?? []) as { empresa: string; concepto: string; presupuesto: number | null }[]) {
+  for (const f of pp) {
     const key = f.empresa + '|' + f.concepto;
     ppto.set(key, (ppto.get(key) ?? 0) + (Number(f.presupuesto) || 0));
   }
@@ -175,5 +199,10 @@ export async function cargarInsumos(
     };
   });
 
-  return { reglas, metodos, params, empresas: EMPRESAS, gn, corte };
+  // C3: la corrida programada tambien necesita los datos del corte, o publicaria
+  // el causado sin prorratear. Mismo helper que usa la pantalla, para que la
+  // publicacion manual y la programada no puedan divergir.
+  const { diaDelCorte, diasDelMes } = datosDelCorte(periodo, corte);
+
+  return { reglas, metodos, params, empresas: EMPRESAS, gn, corte, diaDelCorte, diasDelMes };
 }

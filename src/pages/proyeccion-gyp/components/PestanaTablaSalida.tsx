@@ -1,8 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useToast } from '@/contexts/ToastContext';
-import type { Regla, Parametro } from '../engine';
+import type { Regla, Parametro, Metodo } from '../engine';
 import { fmt } from './formato';
-import { llevaTasaMensual } from '../salida';
+import {
+  llevaTasaMensual,
+  construirFilasEscenarios,
+  fusionarPorCombinada,
+} from '../salida';
 
 /**
  * Pestaña 4 · Tabla de salida.
@@ -22,6 +26,12 @@ export interface PestanaTablaSalidaProps {
   valCausado?: number[];
   params: Record<string, Parametro>;
   periodo: string;
+  /** P11 · Lo necesario para construir las filas con la MISMA función que publica. */
+  metodos?: Record<string, Metodo>;
+  empresas?: readonly string[];
+  gn?: number;
+  diaDelCorte?: number;
+  diasDelMes?: number;
   isAdmin: boolean;
   publicando: boolean;
   onPublicar: () => void;
@@ -53,6 +63,11 @@ export default function PestanaTablaSalida({
   valCausado,
   params,
   periodo,
+  metodos,
+  empresas,
+  gn = 9,
+  diaDelCorte,
+  diasDelMes,
   isAdmin,
   publicando,
   onPublicar,
@@ -87,12 +102,37 @@ export default function PestanaTablaSalida({
       codigo,
     ]);
 
-  /** Las filas del escenario seleccionado: lo que se ve es lo que se exporta. */
-  const filasEscenario = useMemo(
-    () => filasDe(valEscenario, codigoEscenario),
+  /**
+   * P11 · Lo que se ve y se descarga es lo que SE PUBLICA.
+   *
+   * Antes esta pestaña armaba sus filas por su cuenta: una por regla, sin
+   * fusionar por `Combinada` ni repartir. La publicación usa
+   * `construirFilasEscenarios` + `fusionarPorCombinada`, así que la tabla que
+   * la gente revisaba antes de publicar NO era la que acababa en Power BI —
+   * dos cuentas con la misma Combinada salían separadas aquí y juntas allá.
+   *
+   * Ahora se usa la MISMA función. Si no llegan `metodos`/`empresas` (por
+   * ejemplo en una prueba), se cae al armado anterior en vez de romper.
+   */
+  const filasEscenario = useMemo(() => {
+    if (!metodos || !empresas) return filasDe(valEscenario, codigoEscenario);
+    try {
+      const todas = construirFilasEscenarios(periodo, {
+        reglas, metodos, params, empresas, gn, diaDelCorte, diasDelMes,
+      });
+      const delEscenario = todas.filter((f) => f.proyeccion === codigoEscenario);
+      return fusionarPorCombinada(delEscenario).map((f) => [
+        f.fecha, f.ajuste, f.vista, f.combinada, f.pais, f.empresa,
+        f.tasa_mensual ?? '', f.ajuste_usd, f.monto_local, f.monto_usd,
+        f.centro_costo, f.cuenta_contable, f.proyeccion,
+      ]);
+    } catch {
+      // D8 puede negarse a construir (sin tasa o sin país). Se muestra lo que
+      // había para no dejar la pestaña en blanco; publicar sí fallará y dirá por qué.
+      return filasDe(valEscenario, codigoEscenario);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [reglas, valEscenario, codigoEscenario, params, periodo],
-  );
+  }, [reglas, valEscenario, codigoEscenario, params, periodo, metodos, empresas, gn, diaDelCorte, diasDelMes]);
   const sufijo = escenario === 'causado' ? 'causado' : 'proyectado';
   const csvEscenario = () =>
     [COLUMNAS.join(';'), ...filasEscenario.map((f) => f.join(';'))].join('\n');

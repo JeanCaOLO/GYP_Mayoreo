@@ -311,6 +311,35 @@ export interface InsumosPublicacion {
 }
 
 /**
+ * C3 · Deriva los datos del corte que necesita el causado por días calendario
+ * (§E) a partir del periodo (`'2026-10'`) y del corte (`'2026-10-07'`).
+ *
+ * FUENTE ÚNICA a propósito: lo usan la pantalla y la corrida programada
+ * server-side. Calculado por separado en cada sitio, acabarían divergiendo y
+ * la publicación manual y la programada darían causados distintos.
+ *
+ * Se parsea a mano, NO con `new Date('2026-10-07')`: ese constructor lee la
+ * cadena como UTC y en Caracas (UTC−4) `getDate()` devolvería el día anterior,
+ * corriendo todo el causado un día.
+ */
+export function datosDelCorte(
+  periodo: string | null | undefined,
+  corte: string | null | undefined,
+): { diaDelCorte?: number; diasDelMes?: number } {
+  const c = (corte ?? '').split('-').map(Number);
+  const p = (periodo ?? '').split('-').map(Number);
+  const dia = c[2];
+  const anio = p[0];
+  const mes = p[1];
+  return {
+    diaDelCorte: Number.isFinite(dia) ? dia : undefined,
+    // Día 0 del mes siguiente = último día de este mes.
+    diasDelMes:
+      Number.isFinite(anio) && Number.isFinite(mes) ? new Date(anio, mes, 0).getDate() : undefined,
+  };
+}
+
+/**
  * Construye las `FilaResultado` de los DOS escenarios (CP-01/CP-49): una fila por
  * regla, `proyeccion.val[i]` para el escenario 1 (Proyectado, `proyeccion=1`) y
  * `causado.val[i]` para el escenario 2 (Causado, `proyeccion=2`), alineados por
@@ -338,12 +367,38 @@ export function construirFilasEscenarios(
     diasDelMes,
   });
   const fecha = fechaDia1(periodo);
+
+  // D8 · Sin tasa NO se publica un cero. `monto_local = monto * (tasa || 0)`
+  // convertia una tasa ausente en una columna entera de ceros en Power BI: un
+  // dato que parece bueno y no lo es. Es preferible negarse a publicar.
+  const sinTasa = [...new Set(reglas.map((r) => r.empresa))].filter(
+    (e) => !(typeof params[e]?.tasa === 'number' && params[e].tasa !== 0),
+  );
+  if (sinTasa.length) {
+    throw new Error(
+      `No hay tasa del periodo para ${sinTasa.join(', ')}: Monto_Local saldria en 0 ` +
+        `para esas empresas. Carga la tasa en proyeccion_parametro antes de publicar.`,
+    );
+  }
+
+  // D8 · Lo mismo con el pais: `r.pais || PAIS[...] || r.empresa` acababa
+  // poniendo el NOMBRE DE LA EMPRESA en la columna Pais cuando faltaba el mapa.
+  // El mapa propio (CP-52) cubre las seis empresas; si alguna no esta, es un
+  // error de configuracion y se dice, no se rellena con cualquier cosa.
+  const sinPais = [...new Set(reglas.map((r) => r.empresa))].filter((e) => !PAIS[e]);
+  if (sinPais.length) {
+    throw new Error(
+      `Sin pais en el mapa para ${sinPais.join(', ')}: la columna Pais saldria con ` +
+        `el nombre de la empresa. Revisa PAIS en engine.ts.`,
+    );
+  }
+
   const filaDe = (r: Regla, monto: number, escenario: number): FilaResultado => ({
     periodo,
     fecha,
     vista: 'GYP',
     combinada: r.combinada,
-    pais: r.pais || PAIS[r.empresa] || r.empresa,
+    pais: PAIS[r.empresa],
     empresa: r.empresa,
     // CP-05: solo Cofersa/Mundial, con la tasa del mes. Las reglas leídas de la
     // base llegan sin tasa propia; se completa con la de `proyeccion_parametro`.
@@ -352,7 +407,7 @@ export function construirFilasEscenarios(
       : null,
     ajuste: 0,
     ajuste_usd: 0,
-    monto_local: monto * (params[r.empresa]?.tasa || 0),
+    monto_local: monto * (params[r.empresa] as Parametro).tasa!,
     monto_usd: monto,
     centro_costo: r.cc,
     cuenta_contable: r.cuenta,
