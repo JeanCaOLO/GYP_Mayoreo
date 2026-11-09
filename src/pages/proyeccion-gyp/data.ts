@@ -177,6 +177,8 @@ export function ensamblarReglas(
 interface RowParametro {
   periodo: string; empresa: string; dias_habiles_mes: number; dias_transcurridos: number;
   factor_correccion: number; tasa_local: number | null; corte: string | null;
+  /** Cuándo se escribieron estos días/corte. Respalda el sello de frescura. */
+  updated_at?: string | null;
 }
 interface RowMetodo {
   id: string; nombre: string; operacion: Operacion; base: string; valor: number | null;
@@ -210,6 +212,9 @@ export async function cargarDesdeSupabase(
     reglasBase: seed.reglasBase.map((r) => ({ ...r })),
   };
   let encontroAlgo = false;
+  // Lo más reciente que se escribió en los parámetros del mes. Respalda el
+  // sello cuando la extracción no dejó rastro en la bitácora (ver más abajo).
+  let escrituraParametros: string | null = null;
 
   // Parámetros
   const { data: pr } = await supabase
@@ -218,6 +223,8 @@ export async function cargarDesdeSupabase(
     .eq('periodo', periodo);
   if (pr && pr.length) {
     (pr as RowParametro[]).forEach((row) => {
+      if (row.updated_at && (!escrituraParametros || row.updated_at > escrituraParametros))
+        escrituraParametros = row.updated_at;
       if (!EMPRESAS.includes(row.empresa)) return;
       const prev = data.params[row.empresa];
       data.params[row.empresa] = {
@@ -342,16 +349,24 @@ export async function cargarDesdeSupabase(
     const fila = ult[0] as { fin: string | null; inicio: string; corte: string | null };
     data.generado = (fila.fin ?? fila.inicio).slice(0, 16).replace('T', ' ');
     if (fila.corte) data.corte = fila.corte;
+  } else if (escrituraParametros) {
+    // Sin fila de extracción en la bitácora, pero con parámetros escritos: los
+    // datos entraron por el notebook de Fabric (el espejo de Gold a Supabase),
+    // que escribe días, corte e historia pero NO deja rastro en
+    // `proyeccion_corrida`. La cabecera decía «sin fecha» aunque los datos
+    // tuvieran fecha de sobra.
+    //
+    // No es una fecha inventada: es cuándo se escribieron de verdad los días y
+    // el corte que la pantalla está mostrando. La guarda de frescura que
+    // decide si se publica vive en el servidor y mira el `corte`, no esto.
+    data.generado = (escrituraParametros as string).slice(0, 16).replace('T', ' ');
   } else {
-    // Sin bitácora no se inventa una fecha: se dice que no se sabe. Un sello
-    // falso es peor que ninguno, porque la guarda de frescura se lo cree.
+    // Sin bitácora y sin parámetros no se inventa una fecha: se dice que no se
+    // sabe. Un sello falso es peor que ninguno.
     data.generado = null;
   }
 
   if (!encontroAlgo) throw new Error('sin-datos');
-  // «Última extracción»: la última escritura real de Fabric en el mes (sello
-  // del trigger de gyp_historico_mensual), no la fecha de la foto embebida.
-  data.generado = await cargarSelloExtraccion(periodo);
   data.fuente = 'db';
   return data;
 }
@@ -2082,78 +2097,4 @@ export async function cargarMesesPreparados(): Promise<Map<string, MesPreparado>
     if (f.corte && (!previo.corte || f.corte < previo.corte)) previo.corte = f.corte;
   }
   return porMes;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Sello de la extracción y ticks del planificador
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** `timestamptz` → 'YYYY-MM-DD HH:MM' en hora de Caracas. */
-function fechaHoraCaracas(iso: string): string {
-  const p = Object.fromEntries(
-    new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/Caracas',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    })
-      .formatToParts(new Date(iso))
-      .map((x) => [x.type, x.value]),
-  );
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
-}
-
-/**
- * Última escritura real de Fabric en el mes (`gyp_extraccion_sello`, lo pone un
- * trigger de `gyp_historico_mensual`), en hora de Caracas. `null` si Fabric aún
- * no escribió desde que existe el trigger.
- */
-export async function cargarSelloExtraccion(periodo: string): Promise<string | null> {
-  const { data, error } = await supabase
-    .from('gyp_extraccion_sello')
-    .select('escrito_en')
-    .eq('periodo', periodo)
-    .maybeSingle();
-  if (error || !data) return null;
-  return fechaHoraCaracas((data as { escrito_en: string }).escrito_en);
-}
-
-/** Una llamada a corrida-programada (`proyeccion_tick`) y lo que decidió. */
-export interface Tick {
-  ts: string;
-  origen: string;
-  /** enviado | ejecutada | omitida | error */
-  estado: string;
-  periodo: string | null;
-  motivo: string | null;
-  filas: number | null;
-  duracionMs: number | null;
-}
-
-/** Último tick del planificador (origen 'programada'), o `null`. */
-export async function cargarUltimoTick(): Promise<Tick | null> {
-  const { data, error } = await supabase
-    .from('proyeccion_tick')
-    .select('ts,origen,estado,periodo,motivo,filas,duracion_ms')
-    .eq('origen', 'programada')
-    .order('ts', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error || !data) return null;
-  const r = data as {
-    ts: string; origen: string; estado: string; periodo: string | null;
-    motivo: string | null; filas: number | null; duracion_ms: number | null;
-  };
-  return {
-    ts: r.ts,
-    origen: r.origen,
-    estado: r.estado,
-    periodo: r.periodo,
-    motivo: r.motivo,
-    filas: r.filas,
-    duracionMs: r.duracion_ms,
-  };
 }

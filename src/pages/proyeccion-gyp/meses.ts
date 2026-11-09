@@ -43,6 +43,26 @@ export function mesesSeleccionables(hoy: string, mesTrabajo: string | null): str
 }
 
 /**
+ * Si la tarjeta de un mes se puede pulsar.
+ *
+ * Que un mes NO tenga datos es precisamente la razón para poder elegirlo:
+ * elegirlo arrastra sus reglas y habilita la extracción que se los trae. Se
+ * deshabilitó un tiempo y eso creó un bloqueo circular — no se podía elegir
+ * noviembre porque no tenía datos, y no tenía datos porque nadie podía
+ * elegirlo —, así que el mes en curso quedaba inalcanzable desde la pantalla.
+ *
+ * Lo único que impide pulsar es que no haya a quién avisar del cambio
+ * (`onElegirMes` ausente, p. ej. en modo solo lectura) o que ya sea el mes
+ * activo.
+ */
+export function mesSeleccionable(opciones: {
+  activo: boolean;
+  puedeElegir: boolean;
+}): boolean {
+  return opciones.puedeElegir && !opciones.activo;
+}
+
+/**
  * Hoy, `aaaa-mm-dd`, en la zona del negocio.
  *
  * NO se usa la del navegador: con `America/Caracas` el mes cambia a la vez para

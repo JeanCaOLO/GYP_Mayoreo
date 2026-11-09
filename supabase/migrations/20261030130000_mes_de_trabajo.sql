@@ -25,30 +25,15 @@ create table if not exists proyeccion_config (
   actualizado_por  text
 );
 
--- La fila única, sin pisar la que ya exista. El valor inicial es, en orden:
---   1. el mes ya guardado en `proyeccion_mes_trabajo` (productivo lo tiene
---      desde 20261030120000_disparador_mes_trabajo_sello.sql);
---   2. el periodo más reciente de la historia;
---   3. el mes en curso.
--- `proyeccion_mes_trabajo` queda SIN USO desde aquí: la aplicación y la corrida
--- programada leen `proyeccion_config`. No se borra para poder volver atrás.
-do $$
-declare
-  v_guardado text;
-begin
-  if to_regclass('public.proyeccion_mes_trabajo') is not null then
-    execute 'select periodo from proyeccion_mes_trabajo where id = 1' into v_guardado;
-  end if;
-
-  insert into proyeccion_config (id, periodo_trabajo)
-  select 1,
-         coalesce(
-           v_guardado,
-           (select max(periodo) from gyp_historico_mensual),
-           to_char(now() at time zone 'America/Caracas', 'YYYY-MM')
-         )
-   where not exists (select 1 from proyeccion_config where id = 1);
-end $$;
+-- La fila única, sin pisar la que ya exista. El valor inicial sale del periodo
+-- más reciente que haya en la historia; si no hay historia, del mes en curso.
+insert into proyeccion_config (id, periodo_trabajo)
+select 1,
+       coalesce(
+         (select max(periodo) from gyp_historico_mensual),
+         to_char(now() at time zone 'America/Caracas', 'YYYY-MM')
+       )
+ where not exists (select 1 from proyeccion_config where id = 1);
 
 -- Comprobación:
 --   select * from proyeccion_config;

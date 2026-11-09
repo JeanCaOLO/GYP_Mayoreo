@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mesAnterior, periodoDeFecha, mesesSeleccionables } from './meses';
+import { mesAnterior, periodoDeFecha, mesesSeleccionables, mesSeleccionable } from './meses';
 
 describe('mesAnterior', () => {
   it('resta un mes', () => {
@@ -65,5 +65,22 @@ describe('mesesSeleccionables', () => {
   it('siempre viene del mas reciente al mas viejo', () => {
     const m = mesesSeleccionables('2026-11-20', '2026-09');
     expect([...m].sort().reverse()).toEqual(m);
+  });
+});
+
+describe('mesSeleccionable', () => {
+  // El fallo que hubo en QA: noviembre salia en gris y no se podia pulsar.
+  // No se podia elegir porque no tenia datos, y no tenia datos porque nadie
+  // podia elegirlo. El mes en curso quedaba inalcanzable desde la pantalla.
+  it('un mes SIN datos se puede elegir: elegirlo es lo que le trae los datos', () => {
+    expect(mesSeleccionable({ activo: false, puedeElegir: true })).toBe(true);
+  });
+
+  it('el mes que ya es el activo no se vuelve a pulsar', () => {
+    expect(mesSeleccionable({ activo: true, puedeElegir: true })).toBe(false);
+  });
+
+  it('sin a quien avisar del cambio, no se puede elegir', () => {
+    expect(mesSeleccionable({ activo: false, puedeElegir: false })).toBe(false);
   });
 });

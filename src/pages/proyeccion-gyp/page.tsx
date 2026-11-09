@@ -43,7 +43,6 @@ import {
   cargarProgramacion,
   guardarProgramacion,
   cargarUltimaPublicacion,
-  cargarUltimoTick,
   PROGRAMACION_DEFAULT,
   type ProyeccionData,
   type ReglaBase,
@@ -54,7 +53,6 @@ import {
   type Programacion,
   type CambiosProgramacion,
   type Corrida,
-  type Tick,
 } from './data';
 import { mesesSeleccionables, hoyISO } from './meses';
 import SelloFrescura from './components/SelloFrescura';
@@ -128,8 +126,6 @@ export default function ProyeccionGypPage() {
   // Actualización programada (CP-56, pestaña Parámetros) y última publicación.
   const [programacion, setProgramacion] = useState<Programacion>(() => ({ ...PROGRAMACION_DEFAULT }));
   const [ultimaPublicacion, setUltimaPublicacion] = useState<Corrida | null>(null);
-  const [ultimoTick, setUltimoTick] = useState<Tick | null>(null);
-  // Meses que se pueden elegir (CP-33): el en curso, el anterior y el guardado.
   const [traza, setTraza] = useState<Traza | null>(null);
   // Empresas cuya prueba contable CP-47 no cuadra (gobierna la publicación).
   const [pruebaMalasCP47, setPruebaMalasCP47] = useState<string[]>([]);
@@ -431,18 +427,17 @@ export default function ProyeccionGypPage() {
   );
 
   const traer = useCallback(
-    async (manual: boolean, pedido?: string) => {
+    async (manual: boolean) => {
+      const seed = construirDesdeSemilla();
+
       // P1 · El mes de trabajo sale de la configuración COMPARTIDA, no del
       // calendario ni de la constante de la semilla. Si la tabla todavía no
       // existe, se conserva el de la semilla y la pantalla sigue funcionando.
-      // Si el llamador pide un mes concreto, manda ese; si no, el guardado.
       const guardado = await leerMesDeTrabajo();
-      if (guardado) setRevMes(guardado.rev);
-      const semilla = construirDesdeSemilla();
-      const periodo = pedido ?? guardado?.periodo ?? semilla.periodo;
-      // La foto embebida es de su mes; para otro mes no se arrastra su corte.
-      const seed: ProyeccionData =
-        periodo === semilla.periodo ? semilla : { ...semilla, periodo, corte: null, generado: null };
+      if (guardado) {
+        seed.periodo = guardado.periodo;
+        setRevMes(guardado.rev);
+      }
       // Meses que de verdad tienen datos, para las tarjetas de «Sobre qué mes
       // trabajas». Degrada a lista vacía: el componente cae a mostrar solo el
       // mes vigente, que es lo que hacía antes.
@@ -485,11 +480,7 @@ export default function ProyeccionGypPage() {
             `Pantalla actualizada — datos al ${nuevo.corte || '—'}. 6 empresas y ${nuevo.reglasBase.length} reglas recalculadas.`,
           );
       } catch {
-        setData((d) => ({
-          ...d,
-          periodo,
-          fuente: manual || periodo !== d.periodo ? 'error' : d.fuente,
-        }));
+        setData((d) => ({ ...d, fuente: manual ? 'error' : d.fuente }));
         if (manual)
           addToast('error', 'No hay extracción en la base. Se mantiene la foto embebida validada.');
       }
@@ -497,7 +488,6 @@ export default function ProyeccionGypPage() {
     [addToast],
   );
 
-  // Arranca en el mes de trabajo guardado (compartido), no en el del calendario.
   useEffect(() => {
     traer(false);
   }, [traer]);
@@ -568,18 +558,19 @@ export default function ProyeccionGypPage() {
     };
   }, []);
 
-  const recargarCorridas = useCallback(() => {
-    cargarUltimaPublicacion(data.periodo)
-      .then(setUltimaPublicacion)
-      .catch(() => setUltimaPublicacion(null));
-    cargarUltimoTick()
-      .then(setUltimoTick)
-      .catch(() => setUltimoTick(null));
-  }, [data.periodo]);
-
   useEffect(() => {
-    recargarCorridas();
-  }, [recargarCorridas]);
+    let vivo = true;
+    cargarUltimaPublicacion(data.periodo)
+      .then((c) => {
+        if (vivo) setUltimaPublicacion(c);
+      })
+      .catch(() => {
+        if (vivo) setUltimaPublicacion(null);
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [data.periodo]);
 
   // ── Mutadores de reglas ──
   // Aplica un conjunto de cambios a una regla. Las reglas nuevas (`n<i>`) viven
@@ -624,7 +615,7 @@ export default function ProyeccionGypPage() {
     if (r.ok) return;
     if (r.motivo === 'conflicto') {
       addToast('error', `Otra persona cambió ${que} antes. Se recargaron las reglas; revisa y vuelve a guardar.`);
-      traer(false, data.periodo);
+      traer(false);
     } else {
       addToast(
         'error',
@@ -817,10 +808,9 @@ export default function ProyeccionGypPage() {
   // La recarga por `data.periodo` (useEffect del presupuesto) y `traer` repoblará
   // el detalle del nuevo mes; aquí se limpia el estado del mes previo.
   const elegirMes = useCallback(
-    async (nuevoPeriodo: string) => {
+    (nuevoPeriodo: string) => {
       if (nuevoPeriodo === data.periodo) return;
       setPresupuesto([]);
-      setDetalleCuenta([]);
       setOverrides({});
       setNuevas([]);
       // Cambiar de mes NO era solo cambiar la etiqueta: el acumulado, la serie,
@@ -1104,7 +1094,7 @@ export default function ProyeccionGypPage() {
           <div className="flex items-center gap-3">
             <SelloFrescura fuente={data.fuente} generado={data.generado} corte={data.corte} />
             <button
-              onClick={() => traer(true, data.periodo)}
+              onClick={() => traer(true)}
               className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
               Actualizar
@@ -1131,9 +1121,14 @@ export default function ProyeccionGypPage() {
               >
                 <span className="mr-1.5 font-mono text-xs text-slate-400">{t.n}</span>
                 {t.label}
-                {esAlertas && avisos.length > 0 && (
+                {/* P13 · El globo cuenta ALERTAS del catálogo, que es lo que la
+                    pestaña enseña. Contaba `avisos`, que son los avisos de las
+                    reglas (Combinadas repetidas, empresas sin regla de ingreso)
+                    y se muestran en la pestaña Reglas: la pestaña decía 6 con
+                    las tres cajas en cero y no había nada que mirar. */}
+                {esAlertas && alertas.length > 0 && (
                   <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] text-amber-700">
-                    {avisos.length}
+                    {alertas.length}
                   </span>
                 )}
               </button>
@@ -1161,8 +1156,6 @@ export default function ProyeccionGypPage() {
           programacion={programacion}
           onGuardarProgramacion={guardarProg}
           ultimaPublicacion={ultimaPublicacion}
-          ultimoTick={ultimoTick}
-          onCorridaTerminada={recargarCorridas}
           generado={data.generado}
         />
       )}

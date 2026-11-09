@@ -18,21 +18,19 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //   0. Lee la config de `proyeccion_programacion` (fila id=1): activa, frecuencia
 //      (diaria|habiles|semanal + dia_semana), hora_local, zona,
-//      exige_datos_frescos, periodo (null = el mes de trabajo guardado en
-//      `proyeccion_config`, que NO cambia solo con el calendario).
+//      exige_datos_frescos, periodo (null = mes de trabajo vigente).
 //      ¿TOCA AHORA? pg_cron la llama cada 5 minutos; la función solo corre si
-//      hoy toca según la frecuencia, ya pasó la `hora_local` en Caracas y pg_cron
-//      aún no calculó ni publicó desde esa hora. Así un cambio de horario en
+//      hoy toca según la frecuencia, ya pasó la `hora_local` en Caracas y aún
+//      no hubo corrida programada desde esa hora. Así un cambio de horario en
 //      la pantalla rige sin reprogramar el cron. `{"manual": true}` lo salta.
-//      Cada llamada deja una fila en `proyeccion_tick` con lo que decidió.
 //   0b. DATOS DE FABRIC: NO se consulta Fabric. Fabric escribe por su cuenta
 //      en `gyp_historico_mensual` (y el corte en `proyeccion_parametro`); la
 //      corrida usa lo último que haya allí. Sin filas del mes no publica.
 //   1. GUARDIA DE SOLAPAMIENTO (CP-56 #6 / R-27.7): si hay una corrida `en_curso`
-//      (índice único `ux_corrida_una_en_curso`), la nueva se omite y termina.
-//   2. GUARDIA DE DATOS FRESCOS (CP-56 #4 / R-27.6): si `exige_datos_frescos` y
-//      Fabric no escribió el mes hoy (sello de `gyp_extraccion_sello`), la
-//      corrida se omite y CONSERVA lo publicado; el siguiente tick reintenta.
+//      para el periodo, la nueva se marca `omitida` y termina.
+//   2. GUARDIA DE DATOS FRESCOS (CP-56 #4 / R-27.6): si `exige_datos_frescos` y la
+//      extracción del mes no es del día —o su `corte` no avanzó desde la última
+//      publicación—, la corrida se marca `omitida`, avisa y CONSERVA lo publicado.
 //   3. PASO `calculo` (CP-56 #2 / R-27.8): recálculo de los DOS escenarios. Se
 //      registra como un paso aparte en `proyeccion_corrida`. (Ver NOTA DE ALCANCE:
 //      el motor vive en el cliente; aquí se reciben las filas ya calculadas o se
@@ -46,7 +44,7 @@
 //      RPC `publicar_proyeccion`, usando las reglas tal como estén guardadas
 //      (CP-56 #5). El paso 5 NO corre si el paso 3 no terminó (R-27.8).
 //   6. Registra recálculo y publicación POR SEPARADO en `proyeccion_corrida` con
-//      `origen='programada'` (pg_cron) o `'manual'` (botón).
+//      `origen='programada'`.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // DÓNDE VIVE EL MOTOR (recálculo server-side)
@@ -154,9 +152,7 @@ type EstadoCorrida = "en_curso" | "ok" | "error" | "omitida";
 
 /**
  * Inserta una fila de bitácora y devuelve su id, para luego cerrarla con
- * `cerrarCorrida`. `origen` es 'programada' (pg_cron) o 'manual' (botón).
- * Devuelve "ocupado" si ya hay otra corrida en curso: el índice único
- * `ux_corrida_una_en_curso` rechaza la segunda fila `en_curso`.
+ * `cerrarCorrida`. `origen` es siempre 'programada' en esta función.
  */
 async function abrirCorrida(
   db: SupabaseClient,
@@ -164,12 +160,12 @@ async function abrirCorrida(
   paso: Paso,
   estado: EstadoCorrida,
   extra: Partial<{ mensaje: string; filas: number; corte: string | null }> = {},
-): Promise<number | null | "ocupado"> {
+): Promise<number | null> {
   const { data, error } = await db
     .from("proyeccion_corrida")
     .insert({
       periodo,
-      origen: ORIGEN,
+      origen: "programada",
       paso,
       estado,
       filas: extra.filas ?? null,
@@ -182,7 +178,6 @@ async function abrirCorrida(
     .select("id")
     .single();
   if (error) {
-    if (error.code === "23505" && estado === "en_curso") return "ocupado";
     // La bitácora no debe tumbar la corrida, pero sí se registra en el log.
     console.error("proyeccion_corrida insert falló:", error.message);
     return null;
@@ -213,15 +208,16 @@ async function cerrarCorrida(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mes de trabajo: el guardado en `proyeccion_config` (CP-33)
+// Periodo vigente (mes de trabajo) en hora de Caracas
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Respaldo si aún no hay mes guardado: 'aaaa-mm' del mes del calendario EN LA
- * ZONA de la config (Caracas por defecto), con Intl en vez de restar −4 a mano
- * (R-27.2).
+ * Devuelve 'aaaa-mm' del mes vigente EN LA ZONA de la config (Caracas por
+ * defecto). La zona viaja con el dato: se usa Intl para proyectar "ahora" a la
+ * zona, en vez de restar −4 a mano (R-27.2). Así el mes de trabajo cambia a la
+ * medianoche de Caracas, no a la de UTC.
  */
-function periodoCalendario(zona: string): string {
+function periodoVigente(zona: string): string {
   const fmt = new Intl.DateTimeFormat("en-CA", {
     timeZone: zona,
     year: "numeric",
@@ -232,13 +228,23 @@ function periodoCalendario(zona: string): string {
   return partes.slice(0, 7);
 }
 
+/** 'aaaa-mm-dd' de hoy en la zona dada (para el guardia de datos frescos). */
+function hoyEnZona(zona: string): string {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zona,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(new Date()); // "2026-10-22"
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ¿Toca correr ahora? (el cron llama cada 5 minutos)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Quién lanzó la corrida, para la bitácora. Se fijan por petición en el handler. */
+/** Quién lanzó la corrida, para la bitácora. Se fija por petición en el handler. */
 let LANZADA_POR = "pg_cron";
-let ORIGEN: "programada" | "manual" = "programada";
 
 /** Una corrida `en_curso` más vieja que esto se da por caída y no bloquea. */
 const CORRIDA_COLGADA_MS = 30 * 60 * 1000;
@@ -288,10 +294,8 @@ function diaIso(fecha: string): number {
 
 /**
  * Decide si la corrida programada toca ahora: hoy (en la zona) es un día de la
- * frecuencia, ya pasó `hora_local` y pg_cron aún no calculó ni publicó desde
- * entonces. Una corrida omitida (sin datos, datos viejos, solapamiento) no
- * cuenta: el siguiente tick lo vuelve a intentar. Una que terminó en error sí
- * cuenta, para no repetir el mismo fallo cada 5 minutos.
+ * frecuencia, ya pasó `hora_local` y no hubo corrida programada desde entonces.
+ * Devuelve el instante programado de hoy para la bitácora.
  */
 async function tocaAhora(
   db: SupabaseClient,
@@ -317,9 +321,7 @@ async function tocaAhora(
   const { data, error } = await db
     .from("proyeccion_corrida")
     .select("id")
-    .eq("lanzada_por", "pg_cron")
-    .in("paso", ["calculo", "publicacion"])
-    .in("estado", ["en_curso", "ok", "error"])
+    .eq("origen", "programada")
     .gte("inicio", programada.toISOString())
     .limit(1);
   if (error) throw new Error(`No se pudo leer la bitácora: ${error.message}`);
@@ -350,48 +352,70 @@ async function filasHistoricoDelMes(db: SupabaseClient, periodo: string): Promis
 // Guardia de datos frescos (CP-56 #4 / R-27.6)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Corte más avanzado que Fabric dejó en `proyeccion_parametro` para el periodo. */
-async function corteDeExtraccion(db: SupabaseClient, periodo: string): Promise<string | null> {
-  const { data, error } = await db
-    .from("proyeccion_parametro")
-    .select("corte")
-    .eq("periodo", periodo)
-    .not("corte", "is", null);
-  if (error) throw error;
-  const cortes = (data ?? [])
-    .map((r: { corte: string | null }) => r.corte)
-    .filter((c): c is string => !!c)
-    .sort();
-  return cortes.length ? cortes[cortes.length - 1] : null;
-}
-
 /**
- * Los datos del mes están "frescos" si Fabric escribió el periodo HOY (fecha de
- * Caracas). El sello lo pone el trigger de `gyp_historico_mensual` en
- * `gyp_extraccion_sello` cada vez que Fabric escribe, así que refleja la última
- * escritura real y no un campo que el notebook pueda olvidar.
+ * Determina si los datos del mes están "frescos" para publicar. Lee el `corte`
+ * de la extracción en `proyeccion_parametro` y el `corte` de la última
+ * publicación registrada en `proyeccion_corrida`.
+ *
+ * Son VIEJOS (no se debe publicar) cuando:
+ *   - no hay `corte` de extracción para el periodo, o
+ *   - el `corte` de la extracción NO avanzó respecto al de la última publicación.
+ *
+ * (La condición "la extracción no es del día" se interpreta aquí como que el
+ * corte no haya avanzado desde la última publicación; el sello de "última
+ * extracción" lo escribe Fabric en `proyeccion_parametro` y se muestra en
+ * pantalla —R-27.9—, pero la señal operativa dura es el avance del corte, igual
+ * que en refrescar-proyeccion-fabric.)
  */
 async function datosFrescos(
   db: SupabaseClient,
   periodo: string,
-  zona: string,
-): Promise<{ frescos: boolean; motivo?: string }> {
-  const { data, error } = await db
-    .from("gyp_extraccion_sello")
-    .select("escrito_en")
+): Promise<{ frescos: boolean; corteExtraccion: string | null; motivo?: string }> {
+  // Corte de la extracción del mes (lo escribe Fabric; puede haber uno por empresa,
+  // tomamos el más avanzado).
+  const { data: params, error: eParam } = await db
+    .from("proyeccion_parametro")
+    .select("corte")
     .eq("periodo", periodo)
-    .maybeSingle();
-  if (error) throw new Error(`No se pudo leer gyp_extraccion_sello: ${error.message}`);
-  const escrito = (data as { escrito_en: string } | null)?.escrito_en;
-  if (!escrito) {
-    return { frescos: false, motivo: `no hay sello de extracción de ${periodo}.` };
+    .not("corte", "is", null);
+  if (eParam) throw eParam;
+
+  const cortes = (params ?? [])
+    .map((r: { corte: string | null }) => r.corte)
+    .filter((c): c is string => !!c)
+    .sort();
+  const corteExtraccion = cortes.length ? cortes[cortes.length - 1] : null;
+
+  if (!corteExtraccion) {
+    return {
+      frescos: false,
+      corteExtraccion: null,
+      motivo: "la extracción del mes no tiene corte (Fabric no ha escrito datos).",
+    };
   }
-  const hoy = partesEnZona(new Date(), zona).fecha;
-  const diaSello = partesEnZona(new Date(escrito), zona).fecha;
-  if (diaSello !== hoy) {
-    return { frescos: false, motivo: `la última extracción es del ${diaSello}, no de hoy (${hoy}).` };
+
+  // Corte de la última PUBLICACIÓN ok registrada en la bitácora.
+  const { data: ultima, error: eCorr } = await db
+    .from("proyeccion_corrida")
+    .select("corte")
+    .eq("periodo", periodo)
+    .eq("paso", "publicacion")
+    .eq("estado", "ok")
+    .order("inicio", { ascending: false })
+    .limit(1);
+  if (eCorr) throw eCorr;
+
+  const cortePublicado = (ultima?.[0]?.corte as string | null) ?? null;
+
+  if (cortePublicado && corteExtraccion <= cortePublicado) {
+    return {
+      frescos: false,
+      corteExtraccion,
+      motivo: `el corte no avanzó desde la última publicación (publicado ${cortePublicado}, extracción ${corteExtraccion}).`,
+    };
   }
-  return { frescos: true };
+
+  return { frescos: true, corteExtraccion };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -568,85 +592,16 @@ serve(async (req: Request) => {
     return new Response(null, { headers: corsHeaders, status: 204 });
   }
 
-  const t0 = Date.now();
+  const log: string[] = [];
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   const db = createClient(supabaseUrl, serviceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-  const body = await req.json().catch(() => ({} as Record<string, unknown>));
-
-  // Disparo manual (botón o prueba): corre ya, sin mirar horario ni pausa.
-  const manual = body.manual === true;
-  LANZADA_POR = manual ? "manual" : "pg_cron";
-  ORIGEN = manual ? "manual" : "programada";
-
-  // Cada llamada deja su tick. El de pg_cron ya lo abrió
-  // proyeccion_disparar_corrida() y llega en el body; el resto se abre aquí.
-  let tickId = typeof body.tick_id === "number" ? body.tick_id : null;
-  if (tickId == null) {
-    const { data } = await db
-      .from("proyeccion_tick")
-      .insert({ origen: ORIGEN, estado: "enviado" })
-      .select("id")
-      .single();
-    tickId = (data as { id: number } | null)?.id ?? null;
-  }
-
-  const resp = await manejar(db, body, manual, supabaseUrl, serviceKey);
-  const payload = await resp.clone().json().catch(() => null);
-  await cerrarTick(db, tickId, payload, Date.now() - t0);
-  return resp;
-});
-
-/** Escribe en el tick lo que decidió la función y cuánto tardó. */
-async function cerrarTick(
-  db: SupabaseClient,
-  id: number | null,
-  payload: Record<string, unknown> | null,
-  duracionMs: number,
-): Promise<void> {
-  if (id == null) return;
-  const log = Array.isArray(payload?.log) ? (payload!.log as string[]) : [];
-  const publicado = payload?.publicado as Record<string, number> | undefined;
-  const estado = payload?.ejecutada ? "ejecutada" : payload?.ok ? "omitida" : "error";
-  const motivo = payload?.ejecutada
-    ? `publicado ${JSON.stringify(publicado ?? {})}`
-    : [payload?.motivo ?? payload?.error ?? "sin respuesta", log[log.length - 1]]
-        .filter(Boolean)
-        .join(": ");
-  const { error } = await db
-    .from("proyeccion_tick")
-    .update({
-      estado,
-      motivo: String(motivo).slice(0, 2000),
-      periodo: (payload?.periodo as string | undefined) ?? null,
-      filas: publicado ? Object.values(publicado).reduce((a, b) => a + b, 0) : null,
-      duracion_ms: duracionMs,
-      fin: new Date().toISOString(),
-    })
-    .eq("id", id);
-  if (error) console.error("proyeccion_tick update falló:", error.message);
-}
-
-async function manejar(
-  db: SupabaseClient,
-  body: Record<string, unknown>,
-  manual: boolean,
-  supabaseUrl: string,
-  serviceKey: string,
-): Promise<Response> {
-  const log: string[] = [];
-
-  // Una omisión del botón queda en la bitácora para que la vea quien lo pulsó.
-  // Las de pg_cron solo van al tick: el siguiente tick reintenta y no se llena
-  // proyeccion_corrida con una fila cada 5 minutos.
-  const omitir = async (periodo: string, msg: string, corte: string | null = null) => {
-    log.push(msg);
-    if (manual) await abrirCorrida(db, periodo, "calculo", "omitida", { mensaje: msg, corte });
-  };
 
   try {
+    const body = await req.json().catch(() => ({} as Record<string, unknown>));
+
     // 0. Config de programación (fila única id=1).
     const { data: progRow, error: eProg } = await db
       .from("proyeccion_programacion")
@@ -658,6 +613,10 @@ async function manejar(
     if (eProg) throw new Error(`No se pudo leer proyeccion_programacion: ${eProg.message}`);
     const prog = progRow as Programacion;
     const zona = prog.zona || "America/Caracas";
+
+    // Disparo manual (botón o prueba): corre ya, sin mirar horario ni pausa.
+    const manual = body.manual === true;
+    LANZADA_POR = manual ? "manual" : "pg_cron";
 
     // La programación puede estar pausada: el cron sigue llamando cada 5 minutos,
     // pero no se hace nada hasta que la reactiven en la pantalla.
@@ -698,7 +657,7 @@ async function manejar(
       (typeof body.periodo === "string" && body.periodo) ||
       periodoConfig ||
       prog.periodo ||
-      periodoCalendario(zona);
+      periodoVigente(zona);
     if (!periodoConfig && !prog.periodo) {
       log.push(
         `aviso: sin mes de trabajo fijado; se usa el del calendario (${periodo}).`,
@@ -708,24 +667,25 @@ async function manejar(
 
     // 1. GUARDIA DE SOLAPAMIENTO (CP-56 #6 / R-27.7).
     // Una corrida `en_curso` de hace más de 30 min se da por caída: se cierra
-    // como error para que no bloquee para siempre a las siguientes. El bloqueo
-    // real es el índice único al abrir el paso `calculo` (más abajo).
+    // como error para que no bloquee para siempre a las siguientes.
     const limiteColgada = new Date(Date.now() - CORRIDA_COLGADA_MS).toISOString();
     await db
       .from("proyeccion_corrida")
       .update({ estado: "error", fin: new Date().toISOString(), mensaje: "quedó en curso más de 30 min; se da por caída." })
-      .in("paso", ["calculo", "publicacion"])
+      .eq("periodo", periodo)
       .eq("estado", "en_curso")
       .lt("inicio", limiteColgada);
     const { data: enCurso, error: eCurso } = await db
       .from("proyeccion_corrida")
-      .select("id")
-      .in("paso", ["calculo", "publicacion"])
+      .select("id, paso, inicio")
+      .eq("periodo", periodo)
       .eq("estado", "en_curso")
       .limit(1);
     if (eCurso) throw new Error(`No se pudo comprobar solapamiento: ${eCurso.message}`);
     if (enCurso && enCurso.length > 0) {
-      await omitir(periodo, "la corrida anterior sigue en curso; esta se omite.");
+      const msg = "la corrida anterior sigue en curso; esta se omite.";
+      log.push(msg);
+      await abrirCorrida(db, periodo, "calculo", "omitida", { mensaje: msg });
       return json({ ok: true, ejecutada: false, motivo: "solapamiento", periodo, log });
     }
 
@@ -733,42 +693,54 @@ async function manejar(
     // gyp_historico_mensual. Sin filas del mes no se recalcula ni se publica.
     const filasMes = await filasHistoricoDelMes(db, periodo);
     if (filasMes === 0) {
-      await omitir(
-        periodo,
-        `gyp_historico_mensual no tiene datos de ${periodo}: Fabric aún no escribió el mes. Se conserva lo publicado.`,
-      );
+      const msg = `gyp_historico_mensual no tiene datos de ${periodo}: Fabric aún no escribió el mes. Se conserva lo publicado.`;
+      log.push(msg);
+      await abrirCorrida(db, periodo, "calculo", "omitida", { mensaje: msg });
       return json({ ok: true, ejecutada: false, motivo: "sin_datos", periodo, log });
     }
     log.push(`datos de Fabric en gyp_historico_mensual: ${filasMes} filas de ${periodo}.`);
 
     // 2. GUARDIA DE DATOS FRESCOS (CP-56 #4 / R-27.6).
     const forzar = body.forzar === true;
-    let corteExtraccion: string | null = await corteDeExtraccion(db, periodo);
+    let corteExtraccion: string | null = null;
     if (prog.exige_datos_frescos && !forzar) {
-      const f = await datosFrescos(db, periodo, zona);
+      const f = await datosFrescos(db, periodo);
+      corteExtraccion = f.corteExtraccion;
       if (!f.frescos) {
-        await omitir(periodo, `datos viejos: ${f.motivo} Se conserva lo publicado.`, corteExtraccion);
+        const msg = `datos viejos: ${f.motivo} Se conserva lo publicado.`;
+        log.push(msg);
+        await abrirCorrida(db, periodo, "calculo", "omitida", {
+          mensaje: msg,
+          corte: f.corteExtraccion,
+        });
         return json({ ok: true, ejecutada: false, motivo: "datos_viejos", periodo, log });
       }
-      log.push(`datos frescos: Fabric escribió hoy; corte ${corteExtraccion ?? "—"}.`);
+      log.push(`datos frescos: corte de extracción ${corteExtraccion}.`);
     } else {
       log.push(
         forzar
           ? "guardia de datos frescos saltada por 'forzar'."
           : "guardia de datos frescos desactivada en la config.",
       );
+      // Aun sin exigirlo, registramos el corte si lo hay para la bitácora.
+      const { data: params } = await db
+        .from("proyeccion_parametro")
+        .select("corte")
+        .eq("periodo", periodo)
+        .not("corte", "is", null);
+      const cortes = (params ?? [])
+        .map((r: { corte: string | null }) => r.corte)
+        .filter((c): c is string => !!c)
+        .sort();
+      corteExtraccion = cortes.length ? cortes[cortes.length - 1] : null;
     }
 
     // ── PASO 3: RECÁLCULO (CP-56 #2 / R-27.8) ────────────────────────────────
-    // Se abre el paso `calculo` en `en_curso`: si otra corrida ya está en curso,
-    // el índice único lo rechaza y esta se omite (guardia #1).
+    // Se abre el paso `calculo` en `en_curso` para que un segundo disparo lo vea
+    // como solapamiento (guardia #1), y se cierra al terminar.
     const idCalculo = await abrirCorrida(db, periodo, "calculo", "en_curso", {
       corte: corteExtraccion,
     });
-    if (idCalculo === "ocupado") {
-      await omitir(periodo, "otra corrida empezó al mismo tiempo; esta se omite.");
-      return json({ ok: true, ejecutada: false, motivo: "solapamiento", periodo, log });
-    }
 
     const dimCuenta: string[] | undefined = Array.isArray(body.dimCuenta)
       ? body.dimCuenta.map(String)
@@ -855,10 +827,6 @@ async function manejar(
     const idPub = await abrirCorrida(db, periodo, "publicacion", "en_curso", {
       corte: corteExtraccion,
     });
-    if (idPub === "ocupado") {
-      await omitir(periodo, "otra corrida empezó a publicar entre el cálculo y la publicación; esta se omite.");
-      return json({ ok: true, ejecutada: false, motivo: "solapamiento", periodo, log });
-    }
     const res = await publicar(supabaseUrl, serviceKey, periodo, filas, dimCuenta);
     if (!res.ok) {
       const msg = `publicación falló: ${res.error}`;
@@ -886,7 +854,7 @@ async function manejar(
     log.push(`error inesperado: ${msg}`);
     return json({ ok: false, error: msg, log }, 500);
   }
-}
+});
 
 /** Respuesta JSON con los headers de CORS. */
 function json(payload: unknown, status = 200): Response {
@@ -900,9 +868,8 @@ function json(payload: unknown, status = 200): Response {
 // JOB DE pg_cron QUE INVOCA ESTA FUNCIÓN (CP-56, R-27.3)
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// Lo crea supabase/migrations/20261030120000_disparador_mes_trabajo_sello.sql:
-// pg_cron corre CADA 5 MINUTOS proyeccion_disparar_corrida(), que abre el tick y
-// llama a esta función con la clave de Vault; la función decide si toca
-// (frecuencia + hora_local de Caracas). Por eso cambiar el horario en la
-// pantalla no exige reprogramar el cron.
+// Lo crea supabase/migrations/20261028120000_cron_corrida_programada.sql: pg_cron
+// llama a esta función CADA 5 MINUTOS y la función decide si toca (frecuencia +
+// hora_local de Caracas). Por eso cambiar el horario en la pantalla no exige
+// reprogramar el cron.
 // ═════════════════════════════════════════════════════════════════════════════

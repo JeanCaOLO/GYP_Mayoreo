@@ -1,8 +1,3 @@
--- !! SUPERADO — NO CORRER EN PRODUCTIVO. El job vigente lo crea
--- !! 20261030120000_disparador_mes_trabajo_sello.sql (con bitácora proyeccion_tick)
--- !! y la URL del Vault la añade 20261109120000_disparador_url_vault.sql.
--- !! Correr este archivo reemplazaría ese job por uno sin bitácora.
-
 -- ============================================================================
 -- Actualización programada (CP-56): job de pg_cron para corrida-programada
 -- ----------------------------------------------------------------------------

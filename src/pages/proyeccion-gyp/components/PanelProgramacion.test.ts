@@ -4,10 +4,8 @@ import {
   proximaPublicacionEnClaro,
   corteEnClaro,
   duracionEnClaro,
-  origenCorrida,
-  planificadorCallado,
 } from './PanelProgramacion';
-import { PROGRAMACION_DEFAULT, type Programacion, type Tick } from '../data';
+import { PROGRAMACION_DEFAULT, type Programacion } from '../data';
 
 /**
  * Pruebas de las ayudas puras del panel de actualización programada (CP-56).
@@ -78,24 +76,4 @@ describe('duracionEnClaro', () => {
     expect(duracionEnClaro('2026-10-23T11:30:00Z', '2026-10-23T11:31:12Z')).toBe('1 min 12 s');
     expect(duracionEnClaro(null, null)).toBe('—');
   });
-});
-
-describe('origenCorrida', () => {
-  it('el botón es manual aunque la fila vieja diga programada', () => {
-    expect(origenCorrida({ origen: 'programada', lanzadaPor: 'manual' })).toBe('manual');
-    expect(origenCorrida({ origen: 'manual', lanzadaPor: 'manual' })).toBe('manual');
-    expect(origenCorrida({ origen: 'programada', lanzadaPor: 'pg_cron' })).toBe('programada');
-  });
-});
-
-describe('planificadorCallado', () => {
-  const tick = (ts: string): Tick => ({
-    ts, origen: 'programada', estado: 'omitida', periodo: null, motivo: null, filas: null, duracionMs: null,
-  });
-  const ahora = new Date('2026-10-28T14:00:00Z');
-  it('sin ticks, está callado', () => expect(planificadorCallado(null, ahora)).toBe(true));
-  it('tick de hace 5 minutos: activo', () =>
-    expect(planificadorCallado(tick('2026-10-28T13:55:00Z'), ahora)).toBe(false));
-  it('tick de hace 20 minutos: callado', () =>
-    expect(planificadorCallado(tick('2026-10-28T13:40:00Z'), ahora)).toBe(true));
 });
