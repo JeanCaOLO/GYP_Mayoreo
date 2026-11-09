@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { etiquetaConcepto } from '../seed';
+import { useCallback, useMemo, useState } from 'react';
 import {
   formula,
   type Base,
@@ -111,6 +112,27 @@ const OP_PIDE_N = ['promedio', 'mediana', 'ratio_venta'];
 /** Operaciones que ya aparecen como tarjeta de historia con su error WAPE. */
 const OPS_CON_TARJETA = ['promedio', 'mediana', 'ultimo', 'ratio_venta'];
 
+/**
+ * C5 · Modo de causado que le corresponde a cada método de fábrica.
+ *
+ * Copiado de la tabla `OPCIONES` del prototipo (campo `causa`), que es la
+ * referencia de aceptación. `undefined` = el prototipo pone `causa: null`, es
+ * decir NO fijar causado: «Como va el mes» (fórmula de venta) y «Del Cargo Fijo
+ * del grupo» (derivada) ya son su propio causado (§E / Requirement 13.3).
+ */
+export const CAUSADO_DE_METODO: Record<string, Causado | undefined> = {
+  m_mediana: 'calendario', // Lo típico
+  m_promedio: 'calendario', // El promedio
+  m_ultimo: 'calendario', // Igual que el mes pasado
+  m_ppto: 'calendario', // Lo presupuestado
+  m_fijo: 'calendario', // Un monto fijo
+  m_ratio_venta: 'igual', // Según la venta
+  m_pct_venta: 'igual', // Un % de la venta
+  m_pct_semineto: 'igual', // Un % del Semi Neto
+  m_venta: undefined, // Como va el mes          → causa: null
+  m_derivada: undefined, // Del Cargo Fijo del grupo → causa: null
+};
+
 export default function PanelRegla({
   regla,
   valProyeccion,
@@ -140,9 +162,45 @@ export default function PanelRegla({
     cc: regla.cc,
   });
   const [avanzado, setAvanzado] = useState(false);
+  /**
+   * P5 · Borrador del campo de porcentaje/monto mientras se escribe.
+   *
+   * El campo se reformateaba en CADA tecla: `value` salia de
+   * `(valor * 100).toFixed(2)`, asi que escribir "35" dejaba "3,01" y no se
+   * podia borrar el contenido. Mientras el campo tiene el foco manda lo que la
+   * persona escribio; al salir se vuelve a formatear.
+   */
+  const [txtValor, setTxtValor] = useState<string | null>(null);
+
+  // P4 · ¿La empresa tiene venta con historia? Prisma vive de la Colocación y
+  // no la tiene, así que «Según la venta» allí siempre da 0.
+  const hayVenta = !!(serieVenta && serieVenta.some((v) => Number.isFinite(v) && v !== 0));
   const [creando, setCreando] = useState(false);
 
   const set = <K extends keyof Borrador>(k: K, v: Borrador[K]) => setB((p) => ({ ...p, [k]: v }));
+
+  /**
+   * C5 · Elegir una opción fija también su modo de causado.
+   *
+   * Antes solo cambiaba el método: el causado se quedaba en 'igual' y el
+   * escenario Causado salía inflado (el mes entero en vez de lo que va del
+   * mes). El mapeo es el de la tabla `OPCIONES` del prototipo, que es la
+   * referencia de aceptación — no una interpretación:
+   *
+   *   Lo típico · El promedio · Igual que el mes pasado · Lo presupuestado ·
+   *   Un monto fijo · Armar mi fórmula        → 'calendario'
+   *   Según la venta · Un % de la venta · % del Semi Neto → 'igual'
+   *   Como va el mes · Del Cargo Fijo del grupo → NO se toca (`causa: null` en
+   *       el prototipo): la fórmula de venta y la derivada ya son su propio
+   *       causado (§E / Requirement 13.3).
+   *
+   * Un método propio del usuario no está en el mapa y conserva su causado: no
+   * hay forma de adivinar qué quiso, y cambiárselo en silencio sería peor.
+   */
+  const elegirMetodo = (id: string, extras?: Partial<Borrador>) => {
+    const causado = CAUSADO_DE_METODO[id];
+    setB((p) => ({ ...p, metodo: id, valor: null, ...(causado ? { causado } : {}), ...extras }));
+  };
 
   const metodosList = Object.values(metodos);
   const m = metodos[b.metodo];
@@ -155,12 +213,48 @@ export default function PanelRegla({
     [serieConcepto, regla, metodos, serieVenta],
   );
 
+  /**
+   * P4 · Solo se ofrecen las opciones que APLICAN a esta regla.
+   *
+   * Antes se podia poner "Del Cargo Fijo del grupo" o "% del Semi Neto" en
+   * cualquier concepto, o "Segun la venta" en Prisma —que vive de la
+   * Colocacion y no tiene regla de Ventas, asi que da 0—. Una opcion que
+   * siempre devuelve cero no es una opcion: es una trampa.
+   *
+   * Las reglas son las de `opcionesPara` del prototipo:
+   *   - % del Semi Neto   -> solo si la regla es del grupo SEMI
+   *   - Del Cargo Fijo    -> solo para el concepto Colocacion
+   *   - Segun la venta / % de la venta -> solo si la empresa tiene venta con
+   *                          historia y la regla NO es la de Ventas
+   *   - Armar mi formula  -> no para Colocacion
+   * El metodo que la regla YA tiene se ofrece siempre, para no dejarla sin
+   * poder volver a su estado anterior.
+   */
+  const aplica = useCallback(
+    (mm: Metodo): boolean => {
+      if (mm.id === regla.metodo) return true; // el actual, siempre
+      // `pct_semineto` y `pct_venta` NO son operaciones: las dos son
+      // 'porcentaje' y se distinguen por su base. Por eso van por id.
+      if (mm.id === 'm_pct_semineto') return regla.grupo === 'SEMI';
+      if (mm.op === 'derivada') return regla.concepto === 'Colocacion';
+      if (mm.op === 'ratio_venta' || mm.id === 'm_pct_venta') {
+        return hayVenta && regla.concepto !== 'Ventas';
+      }
+      if (mm.op === 'formula_venta') return regla.concepto === 'Ventas';
+      return true;
+    },
+    [regla.metodo, regla.grupo, regla.concepto, hayVenta],
+  );
+
   // Las tarjetas de historia ya cubren los métodos de fábrica de esas
   // operaciones; «Otras formas» lista el resto (sin historia: todos).
   const otrasFormas = useMemo(() => {
-    if (rec.errores.length === 0) return metodosList;
-    return metodosList.filter((mm) => !mm.fijo || !OPS_CON_TARJETA.includes(mm.op));
-  }, [metodosList, rec.errores.length]);
+    const base =
+      rec.errores.length === 0
+        ? metodosList
+        : metodosList.filter((mm) => !mm.fijo || !OPS_CON_TARJETA.includes(mm.op));
+    return base.filter(aplica);
+  }, [metodosList, rec.errores.length, aplica]);
 
   // Cambios del borrador: los usan «Así quedaría» (sin guardar) y Guardar.
   const cambios = useMemo<Partial<Override>>(() => {
@@ -196,6 +290,25 @@ export default function PanelRegla({
     });
     return out;
   }, [rec.errores, metodosList, simular, cambios, serieConcepto, b.n]);
+  /**
+   * P3 · Cuanto daria cada una de las OTRAS opciones.
+   *
+   * "Lo presupuestado", "Como va el mes", "Un monto fijo", "Un % de la venta",
+   * "% del Semi Neto" y "Del Cargo Fijo" quedaban en una lista de botones sin
+   * mostrar su numero, asi que elegir entre ellas era a ciegas: habia que
+   * seleccionar una, mirar el resultado y volver atras si no servia.
+   *
+   * Se simula con el motor completo, igual que las tarjetas de historia.
+   */
+  const numeroOtraForma = useMemo(() => {
+    const out: Record<string, number | null> = {};
+    otrasFormas.forEach((mm) => {
+      const s = simular?.({ ...cambios, metodo: mm.id, valor: null, n: cambios.n });
+      out[mm.id] = s ? s.proy : null;
+    });
+    return out;
+  }, [otrasFormas, simular, cambios]);
+
   const hayCambio =
     !!sim &&
     [sim.proy - valProyeccion, sim.caus - valCausado, sim.snProy - semiNetoProy, sim.snCaus - semiNetoCaus].some(
@@ -209,7 +322,7 @@ export default function PanelRegla({
       {/* Cabecera del panel */}
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="text-sm font-semibold text-slate-900">
-          {regla.empresa} · {regla.concepto}
+          {regla.empresa} · {etiquetaConcepto(regla.concepto)}
         </h3>
         <span className="font-mono text-[11px] text-slate-500">{regla.combinada}</span>
       </div>
@@ -267,9 +380,7 @@ export default function PanelRegla({
                   disponible={!!mo}
                   onElegir={() => {
                     if (!mo) return;
-                    set('metodo', mo.id);
-                    set('valor', null);
-                    if (op.n) set('n', op.n);
+                    elegirMetodo(mo.id, op.n ? { n: op.n } : undefined);
                   }}
                 />
               );
@@ -286,10 +397,7 @@ export default function PanelRegla({
               <button
                 key={mm.id}
                 type="button"
-                onClick={() => {
-                  set('metodo', mm.id);
-                  set('valor', null);
-                }}
+                onClick={() => elegirMetodo(mm.id)}
                 title={formula(mm)}
                 className={`rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
                   sel
@@ -301,6 +409,16 @@ export default function PanelRegla({
                 {!mm.fijo && (
                   <span className={`ml-1 text-[10px] ${sel ? 'text-emerald-100' : 'text-emerald-700'}`}>
                     propia
+                  </span>
+                )}
+                {/* P3 · El numero que daria, para no elegir a ciegas. */}
+                {numeroOtraForma[mm.id] != null && (
+                  <span
+                    className={`block font-mono text-[11px] tabular-nums ${
+                      sel ? 'text-emerald-50' : 'text-slate-500'
+                    }`}
+                  >
+                    {fmt(numeroOtraForma[mm.id] as number)}
                   </span>
                 )}
               </button>
@@ -323,8 +441,8 @@ export default function PanelRegla({
             onCancelar={() => setCreando(false)}
             onCrear={(nuevo) => {
               onCrearMetodo(nuevo);
-              set('metodo', nuevo.id);
-              set('valor', null);
+              // "Armar mi formula" causa por calendario en el prototipo.
+              elegirMetodo(nuevo.id, { causado: 'calendario' });
               setCreando(false);
             }}
           />
@@ -354,10 +472,7 @@ export default function PanelRegla({
           Método
           <select
             value={b.metodo}
-            onChange={(e) => {
-              set('metodo', e.target.value);
-              set('valor', null);
-            }}
+            onChange={(e) => elegirMetodo(e.target.value)}
             className="rounded border border-slate-200 px-2 py-1.5 text-sm"
           >
             {metodosList.map((mm) => (
@@ -390,16 +505,20 @@ export default function PanelRegla({
               type="number"
               step={0.01}
               value={
-                m.op === 'porcentaje'
+                txtValor ??
+                (m.op === 'porcentaje'
                   ? ((b.valor ?? m.valor ?? 0) * 100).toFixed(2)
-                  : Math.round(b.valor ?? m.valor ?? 0)
+                  : String(Math.round(b.valor ?? m.valor ?? 0)))
               }
-              onChange={(e) =>
-                set(
-                  'valor',
-                  m.op === 'porcentaje' ? (+e.target.value || 0) / 100 : +e.target.value || 0,
-                )
-              }
+              onChange={(e) => {
+                const txt = e.target.value;
+                setTxtValor(txt); // manda lo escrito mientras se escribe
+                const v = parseFloat(txt);
+                // Un campo vacio o a medias ("-", "0.") no se guarda como 0:
+                // se deja el valor anterior hasta que haya un numero usable.
+                if (Number.isFinite(v)) set('valor', m.op === 'porcentaje' ? v / 100 : v);
+              }}
+              onBlur={() => setTxtValor(null)} // al salir, se vuelve a formatear
               className="w-28 rounded border border-slate-200 px-2 py-1.5 text-right font-mono text-sm"
             />
           </label>

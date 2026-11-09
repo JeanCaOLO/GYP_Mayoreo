@@ -490,3 +490,90 @@ export function insumosDelRestoDeReglas(
   const cuentas = porCuenta.map(serieCuentaDe);
   return insumosDelResto(concepto, cuentas, opConcepto);
 }
+
+/**
+ * Serie y acumulado de una cuenta, tal como vienen de `gyp_historico_cuenta`.
+ * `meses` llega con `null` en los meses sin registro; aquí ya son NaN, que es
+ * como el motor distingue «sin movimiento» de «cero» (trampa 2).
+ */
+export interface HistoriaDeCuenta {
+  combinada: string;
+  /** Serie mensual con NaN en los meses sin registro. */
+  serie: number[];
+  acum: number;
+}
+
+/**
+ * C1 · Reasigna la historia de un juego de reglas para que las cuentas usen la
+ * suya y el concepto estime «el resto».
+ *
+ * MUTA las reglas recibidas, a propósito: el llamador acaba de construirlas y
+ * esto es el último paso del ensamblado.
+ *
+ * Qué arregla. Una regla de nivel 'cuenta' nacía con la historia del CONCEPTO
+ * ENTERO. Abrir Gastos Varios de Beval en 5 cuentas con «Lo típico» daba 74.414
+ * en cada cuenta —el concepto completo, cinco veces— y el concepto seguía
+ * estimando sus 74.414 encima: el gasto se contaba seis veces y el Semi Neto de
+ * Beval pasaba de 45.934 a −326.135.
+ *
+ * Qué hace:
+ *   1. Cada regla de nivel 'cuenta' toma la serie y el acumulado de SU cuenta.
+ *      Si no hay historia para esa Combinada se deja lo que tenía: es preferible
+ *      el valor anterior a una serie en cero, que haría desaparecer el gasto.
+ *   2. La regla principal del concepto (nivel 'concepto') pasa a estimar
+ *      `concepto − Σ cuentas con regla propia`, de modo que
+ *      «reglas por cuenta + resto» vuelve a sumar el total del concepto.
+ *
+ * Sin reglas por cuenta no toca nada: las 95 reglas de partida están todas en
+ * nivel 'concepto', así que el oráculo de los 190 casos no se mueve.
+ *
+ * Las reglas ADICIONALES (CP-22) se suman al concepto y NO descuentan historia;
+ * `insumosDelRestoDeReglas` ya las distingue por nivel.
+ *
+ * @param reglas   Todas las reglas ya ensambladas (de todas las empresas).
+ * @param historia Historia por `combinada` del periodo.
+ * @param opDe     Operación del método de una regla (para el aviso CP-50 #3).
+ * @returns        Los avisos de doble conteo encontrados, por `empresa|concepto`.
+ */
+export function aplicarHistoriaPorCuenta(
+  reglas: Regla[],
+  historia: Map<string, HistoriaDeCuenta>,
+  opDe: (regla: Regla) => Operacion | OpPaso,
+): Record<string, string> {
+  // 1) Cada cuenta con su propia historia.
+  for (const r of reglas) {
+    if (r.nivel !== 'cuenta') continue;
+    const h = historia.get(r.combinada);
+    if (!h) continue;
+    r.serie = h.serie;
+    r.acum = h.acum;
+  }
+
+  // 2) El concepto estima el resto.
+  const porConcepto = new Map<string, Regla[]>();
+  for (const r of reglas) {
+    const k = r.empresa + '|' + r.concepto;
+    const g = porConcepto.get(k);
+    if (g) g.push(r);
+    else porConcepto.set(k, [r]);
+  }
+
+  const avisos: Record<string, string> = {};
+  porConcepto.forEach((rs, k) => {
+    const principal = rs.find((r) => (r.nivel ?? 'concepto') === 'concepto');
+    if (!principal) return;
+    const resto = insumosDelRestoDeReglas(
+      rs,
+      (r) => {
+        const h = historia.get(r.combinada);
+        return { serie: h?.serie ?? r.serie, acum: h?.acum ?? r.acum };
+      },
+      opDe(principal),
+    );
+    if (!resto) return;
+    principal.serie = resto.serie;
+    principal.acum = resto.acum;
+    if (resto.avisoDobleConteo) avisos[k] = resto.avisoDobleConteo;
+  });
+  return avisos;
+}

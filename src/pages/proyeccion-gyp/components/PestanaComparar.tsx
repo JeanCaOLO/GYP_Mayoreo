@@ -1,3 +1,4 @@
+import { etiquetaConcepto } from '../seed';
 import { Fragment, useMemo, useState } from 'react';
 import type { Metodo, Parametro, Regla } from '../engine';
 import type { PresupuestoFila } from '../data';
@@ -36,6 +37,12 @@ export interface PestanaCompararProps {
 /** Una línea de concepto (agrupa todas las reglas del mismo empresa|concepto). */
 interface FilaConcepto {
   concepto: string;
+  /**
+   * P14 · Grupo del P&L. Hace falta para el color: pasarse del presupuesto es
+   * BUENO en un ingreso y MALO en un gasto, y antes todo lo positivo salia en
+   * verde — un gasto disparado se pintaba como si fuera una buena noticia.
+   */
+  grupo: string;
   proyectado: number;
   causado: number;
   presupuesto: number | null;
@@ -82,6 +89,7 @@ export default function PestanaComparar({
       if (!fila) {
         fila = {
           concepto: r.concepto,
+          grupo: r.grupo,
           proyectado: 0,
           causado: 0,
           presupuesto: presuMap.has(key) ? 0 : null,
@@ -170,7 +178,7 @@ export default function PestanaComparar({
                                   abierto ? 'rotate-90' : ''
                                 }`}
                               />
-                              {f.concepto}
+                              {etiquetaConcepto(f.concepto)}
                               <span className="ml-1 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500">
                                 {f.reglas.length} reglas
                               </span>
@@ -182,7 +190,7 @@ export default function PestanaComparar({
                               className="text-left hover:text-emerald-700 hover:underline"
                               title="¿Por qué este número?"
                             >
-                              {f.concepto}
+                              {etiquetaConcepto(f.concepto)}
                             </button>
                           )}
                         </td>
@@ -199,7 +207,9 @@ export default function PestanaComparar({
                           className={`px-3 py-2 text-right font-mono tabular-nums ${
                             proyVsPpto == null
                               ? 'text-slate-400'
-                              : proyVsPpto >= 0
+                              : // P14 · En VENTAS, por encima del presupuesto es
+                                // bueno. En un gasto es lo contrario.
+                                (f.grupo === 'VENTAS' ? proyVsPpto >= 0 : proyVsPpto <= 0)
                                 ? 'text-emerald-600'
                                 : 'text-red-600'
                           }`}

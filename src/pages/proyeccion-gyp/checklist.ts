@@ -92,8 +92,13 @@ export interface CuadreConcepto {
   reglas: number;
   /** Monto del concepto estimado sobre «el resto» de sus cuentas. */
   resto: number;
-  /** Total del concepto que debe cuadrar con `reglas + resto`. */
-  concepto: number;
+  /**
+   * Total del concepto que debe cuadrar con `reglas + resto`.
+   * Se llama `total` y no `concepto` porque `concepto` ya es el NOMBRE
+   * del concepto (string): declarar los dos con el mismo nombre dejaba
+   * el campo resuelto como string y la comprobacion 8 muerta.
+   */
+  total: number;
 }
 
 /**
@@ -339,10 +344,10 @@ function comprobar8CuadreReglasResto(escenarios: EscenarioChecklist[]): ItemChec
   for (const esc of escenarios) {
     for (const c of esc.cuadres) {
       const suma = c.reglas + c.resto;
-      const diferencia = suma - c.concepto;
+      const diferencia = suma - c.total;
       if (Math.abs(diferencia) > TOLERANCIA_USD) {
         detalle.push(
-          `${esc.nombre}: ${c.empresa} / ${c.concepto}: reglas (${c.reglas.toFixed(2)}) + resto (${c.resto.toFixed(2)}) = ${suma.toFixed(2)} ≠ concepto (${c.concepto.toFixed(2)}), diferencia ${diferencia.toFixed(2)} (CP-21).`,
+          `${esc.nombre}: ${c.empresa} / ${c.concepto}: reglas (${c.reglas.toFixed(2)}) + resto (${c.resto.toFixed(2)}) = ${suma.toFixed(2)} ≠ concepto (${c.total.toFixed(2)}), diferencia ${diferencia.toFixed(2)} (CP-21).`,
         );
       }
     }

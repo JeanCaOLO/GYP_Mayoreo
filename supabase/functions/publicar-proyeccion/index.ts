@@ -235,11 +235,23 @@ serve(async (req: Request) => {
     if (Array.isArray(body.dimCuenta)) {
       catalogo = new Set<string>(body.dimCuenta.map(String));
     } else {
-      const { data, error } = await supabase
-        .from("dim_cuenta")
-        .select("combinada");
-      if (error) throw error;
-      catalogo = new Set<string>((data ?? []).map((r: { combinada: string }) => r.combinada));
+      // D2: PAGINADO, y aqui es lo que mas duele. Supabase corta en 1.000
+      // filas sin avisar; el catalogo de las seis empresas pasa de ahi. Con el
+      // catalogo truncado, Combinadas perfectamente validas se marcan como
+      // HUERFANAS — y la regla de esta funcion es que si hay huerfanas no se
+      // publica NINGUN escenario. Es decir: una lectura cortada en silencio
+      // bloqueaba la publicacion entera y el mensaje culpaba al catalogo.
+      catalogo = new Set<string>();
+      for (let desde = 0; ; desde += 1000) {
+        const { data, error } = await supabase
+          .from("dim_cuenta")
+          .select("combinada")
+          .range(desde, desde + 999);
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        for (const r of data as Array<{ combinada: string }>) catalogo.add(r.combinada);
+        if (data.length < 1000) break;
+      }
     }
 
     // Preparar los dos escenarios ANTES de escribir nada: filtrar (CP-49),
@@ -282,20 +294,62 @@ serve(async (req: Request) => {
       });
     }
 
-    // Publicar cada escenario de forma idempotente y atómica vía la RPC.
+    // D8 · Los DOS escenarios en UNA transacción.
+    //
+    // Antes esto era un bucle de dos RPC, cada una con su propia transacción:
+    // si la segunda fallaba, la tabla final quedaba con un escenario NUEVO y
+    // otro VIEJO —el proyectado de hoy junto al causado de ayer— y en Power BI
+    // no se ve un error, se ven cifras que no cuadran entre si.
+    //
+    // Con `publicar_proyeccion_dos_escenarios`, o entran los dos o no entra
+    // ninguno: ante un fallo la tabla queda como estaba, completa y coherente.
+    // Es preferible un mes viejo entero a un mes nuevo a medias.
     const publicado: Record<string, number> = {};
-    for (const esc of preparados) {
-      const { data, error } = await supabase.rpc("publicar_proyeccion", {
-        p_periodo: periodo,
-        p_escenario: esc.num,
-        p_filas: esc.filas,
-      });
+    let avisoNoAtomico: string | null = null;
+    const esc1 = preparados.find((e) => e.num === 1);
+    const esc2 = preparados.find((e) => e.num === 2);
+
+    if (esc1 && esc2) {
+      const { data, error } = await supabase.rpc(
+        "publicar_proyeccion_dos_escenarios",
+        { p_periodo: periodo, p_filas_1: esc1.filas, p_filas_2: esc2.filas },
+      );
       if (error) {
-        throw new Error(
-          `Fallo al publicar el escenario ${esc.num}: ${error.message}`,
-        );
+        // La RPC puede no existir todavía (migración 20261030140000 sin
+        // aplicar). En ese caso se cae al modo anterior, pero AVISANDO: no
+        // conviene que la publicación deje de ser atómica en silencio.
+        const faltaRpc = /function .*publicar_proyeccion_dos_escenarios.* does not exist/i
+          .test(error.message);
+        if (!faltaRpc) throw new Error(`Fallo al publicar los dos escenarios: ${error.message}`);
+        avisoNoAtomico =
+          "publicar_proyeccion_dos_escenarios no existe: se publicó escenario por " +
+          "escenario, SIN transacción. Aplica la migración 20261030140000.";
+        for (const esc of preparados) {
+          const r = await supabase.rpc("publicar_proyeccion", {
+            p_periodo: periodo, p_escenario: esc.num, p_filas: esc.filas,
+          });
+          if (r.error) {
+            throw new Error(`Fallo al publicar el escenario ${esc.num}: ${r.error.message}`);
+          }
+          publicado[String(esc.num)] = typeof r.data === "number" ? r.data : esc.filas.length;
+        }
+      } else {
+        const d = (data ?? {}) as Record<string, number>;
+        publicado["1"] = d["1"] ?? esc1.filas.length;
+        publicado["2"] = d["2"] ?? esc2.filas.length;
       }
-      publicado[String(esc.num)] = typeof data === "number" ? data : esc.filas.length;
+    } else {
+      // Un solo escenario (el botón «anexar solo el causado»): no hay nada que
+      // hacer atómico, es una sola escritura.
+      for (const esc of preparados) {
+        const { data, error } = await supabase.rpc("publicar_proyeccion", {
+          p_periodo: periodo, p_escenario: esc.num, p_filas: esc.filas,
+        });
+        if (error) {
+          throw new Error(`Fallo al publicar el escenario ${esc.num}: ${error.message}`);
+        }
+        publicado[String(esc.num)] = typeof data === "number" ? data : esc.filas.length;
+      }
     }
 
     return json({
@@ -305,6 +359,9 @@ serve(async (req: Request) => {
       ...(catalogo.size === 0 && {
         aviso: "dim_cuenta está vacía: se publicó sin validar las Combinadas contra el catálogo.",
       }),
+      // D8 · Si la publicación no pudo ser atómica, se dice. Perder esa
+      // garantía en silencio es justo lo que esta corrección evita.
+      ...(avisoNoAtomico && { avisoAtomicidad: avisoNoAtomico }),
     });
   } catch (err) {
     return json({ ok: false, error: String(err instanceof Error ? err.message : err) }, 500);

@@ -56,6 +56,19 @@ const SLOT =
   "CASE WHEN c.Dim_SubClasificacion='Margen' THEN 'Margen-'+c.SubGrupo " +
   "ELSE c.Dim_SubClasificacion END";
 
+// D3 · Mismas condiciones y misma suma que `fabric/refrescar_proyeccion_fabric.py`.
+//
+// Esta funcion escribe en las MISMAS tablas que el script de Fabric, asi que si
+// suma distinto, pulsar "Actualizar" pisa los datos buenos con otros peores y
+// nadie ve un error: solo cifras que cambian al refrescar. Faltaban tres cosas:
+//   - el filtro de vista: sin el entran filas que no son del GyP
+//   - la exclusion de 9.5.*: cuentas de cierre que no van en la proyeccion
+//   - COALESCE en LAS DOS patas de la suma (CP-08): sin el, una fila con
+//     Monto_USD nulo desaparecia sin avisar
+const COND_GYP = "g.Vista = 'GYP'";
+const COND_NO_95 = "g.CUENTA_CONTABLE NOT LIKE '9.5.%'";
+const SUMA_USD = "SUM(COALESCE(g.Monto_USD,0) + COALESCE(g.Ajuste_USD,0))";
+
 const CONCEPTO: Record<string, string> = {
   "Margen-Venta": "Ventas", "Margen-Costo": "Costo de Ventas",
   "Colocación": "Colocacion", "Ingresos Mercantiles": "Ingresos Mercantiles",
@@ -153,7 +166,11 @@ serve(async (req) => {
     const p2 = (n: number) => String(n).padStart(2, "0");
     const ini = `${anio}-${p2(mes)}-01`;
     const fin = mes === 12 ? `${anio + 1}-01-01` : `${anio}-${p2(mes + 1)}-01`;
-    const inicioAnio = `${anio}-01-01`;
+    // D3: 12 meses hacia atras, como el script de Fabric. Antes arrancaba en
+    // enero, asi que en enero la serie quedaba vacia y en febrero tenia un solo
+    // mes: los metodos de historia (mediana, promedio) estimaban sobre nada.
+    const dSerie = new Date(Date.UTC(anio, mes - 1 - 12, 1));
+    const serieIni = `${dSerie.getUTCFullYear()}-${p2(dSerie.getUTCMonth() + 1)}-01`;
     log.push(`Periodo ${periodo} (${ini} a ${fin})`);
 
     // ── Fabric ──
@@ -165,10 +182,11 @@ serve(async (req) => {
     const acum = new Map<string, number>();
     for (const f of await consultar(goldPool, `
       SELECT c.Empresa AS emp, ${SLOT} AS slot,
-             SUM(g.Monto_USD + ISNULL(g.Ajuste_USD,0)) AS usd
+             ${SUMA_USD} AS usd
       FROM Gold.dbo.gld_mayor_mayoreo_agrupado_v2 g
       JOIN Gold.dbo.catalogo_gyp_general_v2 c ON c.Combinada = g.Combinada
       WHERE g.FECHA >= '${ini}' AND g.FECHA < '${fin}'
+        AND ${COND_GYP} AND ${COND_NO_95}
       GROUP BY c.Empresa, ${SLOT}`)) {
       const con = CONCEPTO[String(f.slot)];
       if (con) acum.set(`${f.emp}|${con}`, Math.round(num(f.usd) * 100) / 100);
@@ -179,11 +197,12 @@ serve(async (req) => {
     const serie = new Map<string, Map<string, number>>();
     for (const f of await consultar(goldPool, `
       SELECT c.Empresa AS emp, ${SLOT} AS slot, FORMAT(g.FECHA,'yyyy-MM') AS mes,
-             SUM(g.Monto_USD + ISNULL(g.Ajuste_USD,0)) AS usd
+             ${SUMA_USD} AS usd
       FROM Gold.dbo.gld_mayor_mayoreo_agrupado_v2 g
       JOIN Gold.dbo.catalogo_gyp_general_v2 c ON c.Combinada = g.Combinada
       WHERE c.Empresa IN ('Beval','Febeca','Sillaca','Cofersa','Mundial','Prisma')
-        AND g.FECHA >= '${inicioAnio}' AND g.FECHA < '${ini}'
+        AND g.FECHA >= '${serieIni}' AND g.FECHA < '${ini}'
+        AND ${COND_GYP} AND ${COND_NO_95}
       GROUP BY c.Empresa, ${SLOT}, FORMAT(g.FECHA,'yyyy-MM')`)) {
       const con = CONCEPTO[String(f.slot)];
       if (!con) continue;
@@ -192,7 +211,10 @@ serve(async (req) => {
       serie.get(k)!.set(String(f.mes), Math.round(num(f.usd) * 100) / 100);
     }
     const meses: string[] = [];
-    for (let m = 1; m < mes; m++) meses.push(`${anio}-${p2(m)}`);
+    for (let k = 12; k >= 1; k--) {
+      const d = new Date(Date.UTC(anio, mes - 1 - k, 1));
+      meses.push(`${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}`);
+    }
     log.push(`serie histórica: ${meses.length} meses, ${serie.size} conceptos`);
 
     // 3. El corte (07 §4): último día con volumen >= umbral*mediana, contra Silver.

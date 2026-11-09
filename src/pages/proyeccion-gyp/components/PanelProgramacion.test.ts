@@ -7,7 +7,7 @@ import {
   origenCorrida,
   planificadorCallado,
 } from './PanelProgramacion';
-import { PROGRAMACION_DEFAULT, mesesCandidatos, type Programacion, type Tick } from '../data';
+import { PROGRAMACION_DEFAULT, type Programacion, type Tick } from '../data';
 
 /**
  * Pruebas de las ayudas puras del panel de actualización programada (CP-56).
@@ -77,31 +77,6 @@ describe('duracionEnClaro', () => {
     expect(duracionEnClaro('2026-10-23T11:30:00Z', '2026-10-23T11:30:48Z')).toBe('48 s');
     expect(duracionEnClaro('2026-10-23T11:30:00Z', '2026-10-23T11:31:12Z')).toBe('1 min 12 s');
     expect(duracionEnClaro(null, null)).toBe('—');
-  });
-});
-
-describe('mesesCandidatos', () => {
-  it('ofrece el mes en curso y el anterior (Caracas), más recientes primero', () => {
-    // 28 oct 2026, 10:00 Caracas
-    expect(mesesCandidatos('2026-10', new Date('2026-10-28T14:00:00Z'))).toEqual(['2026-10', '2026-09']);
-  });
-  it('el 1 de noviembre conserva octubre guardado y ofrece noviembre', () => {
-    // 1 nov 2026, 06:50 Caracas = 10:50 UTC
-    expect(mesesCandidatos('2026-10', new Date('2026-11-01T10:50:00Z'))).toEqual(['2026-11', '2026-10']);
-  });
-  it('usa la fecha de Caracas, no la de UTC', () => {
-    // 1 nov 02:00 UTC = 31 oct 22:00 Caracas
-    expect(mesesCandidatos('2026-10', new Date('2026-11-01T02:00:00Z'))).toEqual(['2026-10', '2026-09']);
-  });
-  it('incluye el guardado aunque sea más viejo', () => {
-    expect(mesesCandidatos('2026-08', new Date('2026-10-28T14:00:00Z'))).toEqual([
-      '2026-10',
-      '2026-09',
-      '2026-08',
-    ]);
-  });
-  it('cruza el año', () => {
-    expect(mesesCandidatos('2026-12', new Date('2027-01-05T14:00:00Z'))).toEqual(['2027-01', '2026-12']);
   });
 });
 

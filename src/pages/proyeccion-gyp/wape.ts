@@ -38,7 +38,7 @@
  * _Requirements: 18.3_
  */
 
-import { prom, mediana, ultimo, sumaN } from './engine';
+import { prom, mediana, ultimo } from './engine';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Opciones de estimación (§D) en lenguaje llano
@@ -95,16 +95,32 @@ export interface OpcionBacktest {
 /** N por defecto del §D para lo típico y el promedio. */
 const N_DEFECTO = 9;
 
-/** Ventanas de la proporción «según la venta» (§G). */
-const VENTANAS_RATIO = [3, 6, 9, 12];
+/** Ventanas que prueba el backtest (§G). */
+const VENTANAS = [3, 6, 9, 12];
+/** Alias histórico: la proporción «según la venta» usa las mismas. */
+const VENTANAS_RATIO = VENTANAS;
 
 /**
  * Las opciones que el backtest compara (§G): lo típico, el promedio, igual que
  * el mes pasado y según la venta con 3/6/9/12 meses.
  */
 export const OPCIONES_BACKTEST: OpcionBacktest[] = [
-  { tipo: 'tipico', n: N_DEFECTO, clave: 'tipico', etiqueta: OPCION_LABEL.tipico },
-  { tipo: 'promedio', n: N_DEFECTO, clave: 'promedio', etiqueta: OPCION_LABEL.promedio },
+  // C13: lo típico y el promedio se prueban con 3, 6, 9 y 12 meses, igual que
+  // «según la venta». Antes solo se probaban con 9, así que la recomendación
+  // podía descartar una ventana mejor sin haberla medido — y salía distinta de
+  // la del prototipo (el caso de Ingresos Mercantiles de Mundial).
+  ...VENTANAS.map((n) => ({
+    tipo: 'tipico' as const,
+    n,
+    clave: `tipico:${n}`,
+    etiqueta: `${OPCION_LABEL.tipico} (${n} meses)`,
+  })),
+  ...VENTANAS.map((n) => ({
+    tipo: 'promedio' as const,
+    n,
+    clave: `promedio:${n}`,
+    etiqueta: `${OPCION_LABEL.promedio} (${n} meses)`,
+  })),
   { tipo: 'ultimo', clave: 'ultimo', etiqueta: OPCION_LABEL.ultimo },
   ...VENTANAS_RATIO.map((n) => ({
     tipo: 'ratio_venta' as const,
@@ -167,6 +183,28 @@ export function wape(pronosticos: number[], reales: number[]): number {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * C13 · Sumas de la serie del concepto y de la venta sobre LOS MISMOS meses.
+ *
+ * Toma la ventana de los últimos `n` meses y descarta de AMBAS los meses en los
+ * que el concepto no tuvo registro. `sumaN` por separado no sirve: filtra los
+ * huecos del concepto pero no los de la venta, y la proporción queda sesgada.
+ */
+function sumasAlineadas(
+  serie: number[],
+  venta: number[],
+  n: number,
+): { suma: number; sumaVenta: number } {
+  let suma = 0;
+  let sumaVenta = 0;
+  for (let i = Math.max(0, serie.length - n); i < serie.length; i++) {
+    if (!Number.isFinite(serie[i])) continue; // mes sin registro: fuera de las dos
+    suma += serie[i];
+    sumaVenta += Number.isFinite(venta[i]) ? venta[i] : 0;
+  }
+  return { suma, sumaVenta };
+}
+
+/**
  * Estima un mes con la opción dada usando SOLO la historia `previa` (los meses
  * anteriores al que se pronostica). Para «según la venta» hace falta además la
  * venta de esos meses (`ventaPrevia`) y la venta del mes pronosticado
@@ -187,10 +225,14 @@ export function pronosticar(
     case 'ultimo':
       return ultimo(previa);
     case 'ratio_venta': {
-      const sumaVenta = sumaN(ventaPrevia, n);
+      // C13: las dos sumas se calculan sobre LOS MISMOS meses. Antes el
+      // numerador descartaba los meses sin registro del concepto y el
+      // denominador se quedaba con todos los de venta, así que la proporción
+      // salía baja —el concepto parecía pesar menos sobre la venta de lo que
+      // pesa— y el backtest castigaba a esta opción sin motivo.
+      const { suma, sumaVenta } = sumasAlineadas(previa, ventaPrevia, n);
       if (sumaVenta === 0) return 0;
-      const ratio = sumaN(previa, n) / sumaVenta;
-      return ratio * ventaMes;
+      return (suma / sumaVenta) * ventaMes;
     }
     default:
       return 0;

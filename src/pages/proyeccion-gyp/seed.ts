@@ -219,3 +219,25 @@ export const REGLAS_SEED: ReglaSeed[] = [
 export const TOTAL_REGLAS_ESPERADO = 95;
 
 export type { Operacion, GrupoPL, Base };
+
+/**
+ * P8 · Como se MUESTRA cada concepto.
+ *
+ * Los nombres de `concepto` son LLAVES DE DATOS: viajan en `empresa|concepto`,
+ * se guardan en `proyeccion_regla` y cruzan contra `gyp_historico_mensual`.
+ * Renombrarlos rompería el join en silencio (la trampa 2 del proyecto), así que
+ * la base no se toca: solo cambia la etiqueta.
+ *
+ * Un concepto que no esté aquí se muestra tal cual.
+ */
+export const ETIQUETA_CONCEPTO: Record<string, string> = {
+  'Personal Fijo': 'Personal',
+  Logistico: 'Logístico',
+  Depreciacion: 'Depreciación',
+  Colocacion: 'Colocación',
+};
+
+/** Nombre de un concepto tal como debe verse en pantalla (P8). */
+export function etiquetaConcepto(concepto: string): string {
+  return ETIQUETA_CONCEPTO[concepto] ?? concepto;
+}
