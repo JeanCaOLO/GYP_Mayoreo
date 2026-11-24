@@ -76,6 +76,8 @@ export interface CatalogoItem {
   clasificacion_combinado_2: string | null;
   clasificacion_combinado_3: string | null;
   orden_clasificacion: number | null;
+  /** Conversión: true = «Si» aplica, false = «No». */
+  conversion: boolean;
   activa: boolean;
   created_at: string;
   pais_id: string | null;

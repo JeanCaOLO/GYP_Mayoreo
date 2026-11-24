@@ -28,6 +28,7 @@ const initialForm = {
   clasificacion_combinado_2: '',
   clasificacion_combinado_3: '',
   orden_clasificacion: '',
+  conversion: false,
   activa: true,
   organizacion_id: '',
   pais_id: '',
@@ -60,6 +61,7 @@ export function CatalogoModal({ isOpen, item, organizaciones, paises, companias,
           clasificacion_combinado_2: item.clasificacion_combinado_2 ?? '',
           clasificacion_combinado_3: item.clasificacion_combinado_3 ?? '',
           orden_clasificacion: item.orden_clasificacion ?? '',
+          conversion: item.conversion ?? false,
           activa: item.activa,
           organizacion_id: item.organizacion_id ?? '',
           pais_id: item.pais_id ?? '',
@@ -97,6 +99,7 @@ export function CatalogoModal({ isOpen, item, organizaciones, paises, companias,
     const payload: Record<string, unknown> = {
       cuenta: form.cuenta.trim(),
       descripcion: form.descripcion.trim(),
+      conversion: form.conversion,
       activa: form.activa,
     };
     if (form.linea !== '') payload.linea = Number(form.linea);
@@ -342,6 +345,18 @@ export function CatalogoModal({ isOpen, item, organizaciones, paises, companias,
             {centrosCostos.map((c) => (
               <option key={c.id} value={c.id}>{c.nombre}</option>
             ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Conversión</label>
+          <select
+            value={form.conversion ? 'Si' : 'No'}
+            onChange={(e) => handleChange('conversion', e.target.value === 'Si')}
+            className={inputClass('conversion')}
+          >
+            <option value="No">No</option>
+            <option value="Si">Si</option>
           </select>
         </div>
 

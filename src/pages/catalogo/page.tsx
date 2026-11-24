@@ -13,6 +13,22 @@ import { usePermissions } from '@/hooks/usePermissions';
 
 const PAGE_SIZE = 50;
 
+/**
+ * Lee la columna «Conversión» de un Excel. Solo acepta «Si» o «No»
+ * (sin importar mayúsculas ni tildes).
+ * undefined = celda vacía · null = valor no permitido.
+ */
+const parseConversion = (raw: unknown): boolean | null | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  const s = String(raw).trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (s === '') return undefined;
+  if (s === 'si') return true;
+  if (s === 'no') return false;
+  return null;
+};
+
+const CONVERSION_HEADERS = ['Conversion', 'Conversión', 'conversion', 'CONVERSION'];
+
 export default function CatalogoPage() {
   const [items, setItems] = useState<CatalogoItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,6 +60,7 @@ export default function CatalogoPage() {
     orgCount: 0,
     ccCount: 0,
     duplicates: 0,
+    invalidConversion: 0,
   });
   const [toInsert, setToInsert] = useState<Record<string, unknown>[]>([]);
   const [searchResults, setSearchResults] = useState<CatalogoItem[] | null>(null);
@@ -159,7 +176,7 @@ export default function CatalogoPage() {
       const headers = [
         'ID', 'Linea', 'Grupo', 'Cuenta', 'Descripcion', 'Saldo Normal',
         'Comercializadora', 'Balance_GyP', 'Clasificacion', 'Clasificacion 1',
-        'Clasificacion 2', 'Clasificacion Combinado 1', 'Clasificacion Combinado 2', 'Clasificacion Combinado 3', 'Orden Clasificacion', 'Activa',
+        'Clasificacion 2', 'Clasificacion Combinado 1', 'Clasificacion Combinado 2', 'Clasificacion Combinado 3', 'Orden Clasificacion', 'Conversion', 'Activa',
         'Organizacion', 'Pais', 'Compania', 'Centro Costo',
       ];
 
@@ -179,6 +196,7 @@ export default function CatalogoPage() {
         item.clasificacion_combinado_2 ?? '',
         item.clasificacion_combinado_3 ?? '',
         item.orden_clasificacion ?? '',
+        item.conversion ? 'Si' : 'No',
         item.activa ? 'SI' : 'NO',
         item.organizacion_id ? orgMap.get(item.organizacion_id as string) || '' : '',
         item.pais_id ? paisMap.get(item.pais_id as string) || '' : '',
@@ -315,6 +333,7 @@ export default function CatalogoPage() {
       let skipped = 0;
       let noChanges = 0;
       let errors = 0;
+      let invalidConversion = 0;
       const BATCH_SIZE = 100;
       const updates: { id: string; changes: Record<string, unknown> }[] = [];
 
@@ -325,7 +344,16 @@ export default function CatalogoPage() {
         const current = currentMap.get(id);
         if (!current) { skipped++; continue; }
 
+        // Conversión: solo «Si» / «No». Celda vacía = no se toca.
+        // Un valor distinto deja la fila entera sin actualizar.
+        const conversionVal = parseConversion(getVal(row, ...CONVERSION_HEADERS));
+        if (conversionVal === null) { invalidConversion++; continue; }
+
         const changes: Record<string, unknown> = {};
+
+        if (conversionVal !== undefined && Boolean(current.conversion) !== conversionVal) {
+          changes.conversion = conversionVal;
+        }
 
         for (const field of editableFields) {
           const excelVal = getVal(row, ...field.excel);
@@ -375,8 +403,15 @@ export default function CatalogoPage() {
         }
       }
 
+      const conversionMsg = invalidConversion > 0
+        ? `${invalidConversion} filas no se actualizaron: Conversión solo acepta "Si" o "No"`
+        : '';
+
       if (updates.length === 0) {
-        addToast('info', `No se encontraron cambios. ${noChanges} registros sin modificaciones, ${skipped} omitidos.`);
+        addToast(
+          invalidConversion > 0 ? 'warning' : 'info',
+          `No se encontraron cambios. ${noChanges} registros sin modificaciones, ${skipped} omitidos.${conversionMsg ? ` ${conversionMsg}.` : ''}`,
+        );
         setImportProgress(null);
         return;
       }
@@ -407,8 +442,9 @@ export default function CatalogoPage() {
       if (noChanges > 0) msgs.push(`${noChanges} sin cambios`);
       if (skipped > 0) msgs.push(`${skipped} omitidos`);
       if (errors > 0) msgs.push(`${errors} errores`);
+      if (conversionMsg) msgs.push(conversionMsg);
 
-      addToast(errors > 0 ? 'warning' : 'success', msgs.join(', '));
+      addToast(errors > 0 || invalidConversion > 0 ? 'warning' : 'success', msgs.join(', '));
       fetchData();
     } catch (err) {
       addToast('error', 'Error al actualizar: ' + (err as Error).message);
@@ -437,6 +473,7 @@ export default function CatalogoPage() {
         'Clasificacion Combinado 2',
         'Clasificacion Combinado 3',
         'Orden Clasificacion',
+        'Conversion',
         'Organizacion',
         'Pais',
         'Compania',
@@ -458,6 +495,7 @@ export default function CatalogoPage() {
         '',
         '',
         1,
+        'No',
         'OLO',
         'Colombia',
         'BEVAL',
@@ -466,6 +504,12 @@ export default function CatalogoPage() {
       const ws = xlsx.utils.aoa_to_sheet([headers, ejemplo]);
       const wb = xlsx.utils.book_new();
       xlsx.utils.book_append_sheet(wb, ws, 'Catalogo GYP');
+      const instrucciones = xlsx.utils.aoa_to_sheet([
+        ['Columna', 'Valores permitidos'],
+        ['Conversion', 'Si o No. Si se deja vacía se carga como No.'],
+      ]);
+      instrucciones['!cols'] = [{ wch: 16 }, { wch: 50 }];
+      xlsx.utils.book_append_sheet(wb, instrucciones, 'Instrucciones');
       const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
       const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = URL.createObjectURL(blob);
@@ -613,6 +657,7 @@ export default function CatalogoPage() {
       let orgCount = 0;
       let duplicates = 0;
       let ccCount = 0;
+      let invalidConversion = 0;
       const parsed: ImportPreviewRow[] = [];
       const batchToInsert: Record<string, unknown>[] = [];
       // Detección de duplicados DENTRO del lote
@@ -662,9 +707,19 @@ export default function CatalogoPage() {
         if (orgId) orgCount++;
         if (ccId) ccCount++;
 
+        // Conversión: solo «Si» / «No». Vacía = «No».
+        const conversionRaw = String(getVal(row, ...CONVERSION_HEADERS) ?? '').trim();
+        const conversionVal = parseConversion(conversionRaw);
+
         // Sin detección de duplicados — el upsert en BD maneja conflictos
-        const rowError: string | null = null;
-        const rowValido = true;
+        let rowError: string | null = null;
+        let rowValido = true;
+        if (conversionVal === null) {
+          invalidConversion++;
+          rowValido = false;
+          rowError = `Conversión "${conversionRaw}" no válida (solo Si o No)`;
+        }
+        const conversion = conversionVal ?? false;
 
         const safeNumber = (raw: unknown) => {
           if (raw === '' || raw === null || raw === undefined) return null;
@@ -691,6 +746,7 @@ export default function CatalogoPage() {
           clasificacion_combinado_2: clasificacionCombinado2 || null,
           clasificacion_combinado_3: clasificacionCombinado3 || null,
           orden_clasificacion: safeNumber(ordenRaw),
+          conversion,
           activa: true,
           organizacion_id: orgId,
           pais_id: paisId,
@@ -714,6 +770,7 @@ export default function CatalogoPage() {
           comercializadora,
           balance_gyp: balanceGyp,
           orden_clasificacion: safeNumber(ordenRaw),
+          conversion: conversionVal === null ? null : conversion,
           pais_nombre: paisNombre,
           pais_id: paisId,
           org_nombre: orgNombre,
@@ -737,6 +794,7 @@ export default function CatalogoPage() {
         orgCount,
         ccCount,
         duplicates,
+        invalidConversion,
       });
       setToInsert(batchToInsert);
       setImportProgress(null);
@@ -802,7 +860,7 @@ export default function CatalogoPage() {
 
         // Log historial: actualización
         const cambiosList: string[] = [];
-        const campos = ['linea', 'grupo', 'cuenta', 'descripcion', 'saldo_normal', 'comercializadora', 'balance_gyp', 'clasificacion', 'clasificacion_1', 'clasificacion_2', 'orden_clasificacion'];
+        const campos = ['linea', 'grupo', 'cuenta', 'descripcion', 'saldo_normal', 'comercializadora', 'balance_gyp', 'clasificacion', 'clasificacion_1', 'clasificacion_2', 'orden_clasificacion', 'conversion'];
         campos.forEach((campo) => {
           const oldVal = (editing as Record<string, unknown>)[campo];
           const newVal = formData[campo];
@@ -1179,6 +1237,7 @@ export default function CatalogoPage() {
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasif. Comb. 2</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasif. Comb. 3</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Orden</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Conversión</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Org.</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">País</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Cía.</th>
@@ -1191,7 +1250,7 @@ export default function CatalogoPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-slate-100">
-                    {Array.from({ length: canWrite ? 17 : 16 }).map((_, j) => (
+                    {Array.from({ length: canWrite ? 21 : 20 }).map((_, j) => (
                       <td key={j} className="py-3 pr-4">
                         <div className="h-4 bg-slate-200 rounded animate-pulse w-20"></div>
                       </td>
@@ -1200,7 +1259,7 @@ export default function CatalogoPage() {
                 ))
               ) : error ? (
                 <tr>
-                  <td colSpan={canWrite ? 20 : 19} className="py-12">
+                  <td colSpan={canWrite ? 21 : 20} className="py-12">
                     <div className="flex flex-col items-center text-center gap-3">
                       <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
                         <i className="ri-error-warning-line text-red-500 text-xl"></i>
@@ -1228,7 +1287,7 @@ export default function CatalogoPage() {
                 </tr>
               ) : searchLoading ? (
                 <tr>
-                  <td colSpan={canWrite ? 20 : 19} className="py-12 text-center">
+                  <td colSpan={canWrite ? 21 : 20} className="py-12 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
                       <p className="text-sm text-slate-500">Buscando en todo el catálogo...</p>
@@ -1237,7 +1296,7 @@ export default function CatalogoPage() {
                 </tr>
               ) : search && search.trim() && searchResults !== null && searchResults.length === 0 ? (
                 <tr>
-                  <td colSpan={canWrite ? 20 : 19} className="py-12 text-center">
+                  <td colSpan={canWrite ? 21 : 20} className="py-12 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center">
                         <i className="ri-search-line text-amber-500 text-xl"></i>
@@ -1270,6 +1329,11 @@ export default function CatalogoPage() {
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_2 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_3 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.orden_clasificacion ?? '-'}</td>
+                    <td className="py-3 pr-4 whitespace-nowrap">
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${item.conversion ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-500'}`}>
+                        {item.conversion ? 'Si' : 'No'}
+                      </span>
+                    </td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
                       {organizacionesMap.get(item.organizacion_id || '') || <span className="text-slate-400 italic">—</span>}
                     </td>
@@ -1323,7 +1387,7 @@ export default function CatalogoPage() {
                 ))
               ) : paginated.length === 0 ? (
                 <tr>
-                  <td colSpan={canWrite ? 20 : 19} className="py-8 text-center text-slate-400">
+                  <td colSpan={canWrite ? 21 : 20} className="py-8 text-center text-slate-400">
                     No se encontraron resultados
                   </td>
                 </tr>
@@ -1344,6 +1408,11 @@ export default function CatalogoPage() {
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_2 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_3 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.orden_clasificacion ?? '-'}</td>
+                    <td className="py-3 pr-4 whitespace-nowrap">
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${item.conversion ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-500'}`}>
+                        {item.conversion ? 'Si' : 'No'}
+                      </span>
+                    </td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
                       {organizacionesMap.get(item.organizacion_id || '') || <span className="text-slate-400 italic">—</span>}
                     </td>
@@ -1468,6 +1537,7 @@ export default function CatalogoPage() {
         orgCount={previewStats.orgCount}
         ccCount={previewStats.ccCount}
         duplicates={previewStats.duplicates}
+        invalidConversion={previewStats.invalidConversion}
         loading={!!importProgress}
         paises={paises}
         companias={companias}

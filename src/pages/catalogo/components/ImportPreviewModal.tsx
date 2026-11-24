@@ -13,6 +13,8 @@ interface ImportPreviewRow {
   comercializadora: string;
   balance_gyp: string;
   orden_clasificacion: number | null;
+  /** true = Si, false = No, null = valor no válido en el Excel. */
+  conversion: boolean | null;
   pais_nombre: string;
   pais_id: string | null;
   org_nombre: string;
@@ -39,6 +41,7 @@ interface ImportPreviewModalProps {
   orgCount: number;
   ccCount: number;
   duplicates: number;
+  invalidConversion: number;
   loading: boolean;
   paises: Pais[];
   companias: Compania[];
@@ -59,6 +62,7 @@ export default function ImportPreviewModal({
   orgCount,
   ccCount,
   duplicates,
+  invalidConversion,
   loading,
   paises,
   companias,
@@ -74,12 +78,13 @@ export default function ImportPreviewModal({
       { label: 'Sin cuenta/descripción', value: skipped },
       { label: 'Números inválidos', value: invalidNumbers },
       { label: 'Duplicados en lote', value: duplicates },
+      { label: 'Conversión no válida (solo Si/No)', value: invalidConversion },
       { label: 'País no encontrado', value: missingUbicacion },
       { label: 'Con país asignado', value: paisCount },
       { label: 'Con org. asignada', value: orgCount },
       { label: 'Con CC asignado', value: ccCount },
     ],
-    [total, validCount, skipped, invalidNumbers, duplicates, missingUbicacion, paisCount, orgCount, ccCount],
+    [total, validCount, skipped, invalidNumbers, duplicates, invalidConversion, missingUbicacion, paisCount, orgCount, ccCount],
   );
 
   if (!isOpen) return null;
@@ -143,6 +148,7 @@ export default function ImportPreviewModal({
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Clasificación</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Clasif. 1</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Clasif. 2</th>
+                  <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Conversión</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">País</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Org.</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Cía.</th>
@@ -168,6 +174,15 @@ export default function ImportPreviewModal({
                     <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion || '-'}</td>
                     <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion_1 || '-'}</td>
                     <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion_2 || '-'}</td>
+                    <td className="py-2 px-3 whitespace-nowrap">
+                      {row.conversion === null ? (
+                        <span className="text-xs text-red-700 bg-red-100 rounded-full px-2 py-0.5">No válido</span>
+                      ) : (
+                        <span className={`text-xs rounded-full px-2 py-0.5 ${row.conversion ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-500'}`}>
+                          {row.conversion ? 'Si' : 'No'}
+                        </span>
+                      )}
+                    </td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       {row.pais_id ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">
