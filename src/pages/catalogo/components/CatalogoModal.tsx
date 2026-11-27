@@ -14,8 +14,8 @@ interface CatalogoModalProps {
 }
 
 const initialForm = {
-  linea: '',
-  grupo: '',
+  linea: '' as string | number,
+  grupo: '' as string | number,
   cuenta: '',
   descripcion: '',
   saldo_normal: '',
@@ -27,7 +27,7 @@ const initialForm = {
   clasificacion_combinado_1: '',
   clasificacion_combinado_2: '',
   clasificacion_combinado_3: '',
-  orden_clasificacion: '',
+  orden_clasificacion: '' as string | number,
   conversion: false,
   activa: true,
   organizacion_id: '',

@@ -42,6 +42,8 @@ interface ImportPreviewModalProps {
   ccCount: number;
   duplicates: number;
   invalidConversion: number;
+  /** Filas cuya cuenta × compañía × centro de costo ya está en el catálogo. */
+  existentes: number;
   loading: boolean;
   paises: Pais[];
   companias: Compania[];
@@ -63,6 +65,7 @@ export default function ImportPreviewModal({
   ccCount,
   duplicates,
   invalidConversion,
+  existentes,
   loading,
   paises,
   companias,
@@ -76,15 +79,16 @@ export default function ImportPreviewModal({
       { label: 'Total filas', value: total },
       { label: 'Listos para importar', value: validCount },
       { label: 'Sin cuenta/descripción', value: skipped },
-      { label: 'Números inválidos', value: invalidNumbers },
-      { label: 'Duplicados en lote', value: duplicates },
+      { label: 'Ya existen en el catálogo', value: existentes },
+      { label: 'Repetidas en el archivo', value: duplicates },
+      { label: 'Ubicación no encontrada', value: missingUbicacion },
       { label: 'Conversión no válida (solo Si/No)', value: invalidConversion },
-      { label: 'País no encontrado', value: missingUbicacion },
+      { label: 'Números inválidos', value: invalidNumbers },
       { label: 'Con país asignado', value: paisCount },
       { label: 'Con org. asignada', value: orgCount },
       { label: 'Con CC asignado', value: ccCount },
     ],
-    [total, validCount, skipped, invalidNumbers, duplicates, invalidConversion, missingUbicacion, paisCount, orgCount, ccCount],
+    [total, validCount, skipped, invalidNumbers, duplicates, existentes, invalidConversion, missingUbicacion, paisCount, orgCount, ccCount],
   );
 
   if (!isOpen) return null;
@@ -98,7 +102,7 @@ export default function ImportPreviewModal({
           <div>
             <h3 className="text-lg font-semibold text-slate-900">Previsualización de Importación</h3>
             <p className="text-sm text-slate-500 mt-0.5">
-              Revisá los datos antes de confirmar. Solo se importarán las filas válidas.
+              Revisá los datos antes de confirmar. Solo se importarán las filas válidas (las que tienen problema aparecen primero).
             </p>
           </div>
           <button onClick={onClose} className="rounded-lg p-1 hover:bg-slate-100">

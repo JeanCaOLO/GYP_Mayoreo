@@ -1,33 +1,88 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import type { CatalogoItem, Organizacion, Pais, Compania, CentroCosto } from '@/types';
+import type { CatalogoItem } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import { ConfirmModal } from '@/components/base/ConfirmModal';
+import { Modal } from '@/components/base/Modal';
 import { ProgressModal } from '@/components/base/ProgressModal';
 import { CatalogoModal } from '@/pages/catalogo/components/CatalogoModal';
 import ImportPreviewModal from '@/pages/catalogo/components/ImportPreviewModal';
 import type { ImportPreviewRow } from '@/pages/catalogo/components/ImportPreviewModal';
 import { useUbicaciones } from '@/hooks/useUbicaciones';
 import { usePermissions } from '@/hooks/usePermissions';
+import {
+  calcularCambiosFila,
+  crearLector,
+  crearResolvedor,
+  detectarColisiones,
+  enParalelo,
+  llaveCatalogo,
+  parsearFilaImportacion,
+  type Entidad,
+  type FilaExcel,
+  type Resolvedores,
+} from '@/pages/catalogo/masivo';
 
 const PAGE_SIZE = 50;
+const TAM_PAGINA_BD = 1000;
 
 /**
- * Lee la columna «Conversión» de un Excel. Solo acepta «Si» o «No»
- * (sin importar mayúsculas ni tildes).
- * undefined = celda vacía · null = valor no permitido.
+ * Lee una tabla completa paginando con `.range()`. El catálogo ya pasa de
+ * 8.800 filas: un `.limit()` fijo o el tope de filas de la API lo cortan en
+ * silencio. Siempre ordena también por `id` para que las páginas no se
+ * solapen (la cuenta se repite por compañía y centro de costo).
  */
-const parseConversion = (raw: unknown): boolean | null | undefined => {
-  if (raw === undefined || raw === null) return undefined;
-  const s = String(raw).trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  if (s === '') return undefined;
-  if (s === 'si') return true;
-  if (s === 'no') return false;
-  return null;
-};
+async function traerTodo<T>(tabla: string, columnas: string, orden: string[] = []): Promise<T[]> {
+  const out: T[] = [];
+  for (let desde = 0; ; desde += TAM_PAGINA_BD) {
+    let q = supabase.from(tabla).select(columnas);
+    for (const o of [...orden, 'id']) q = q.order(o, { ascending: true });
+    const { data, error } = await q.range(desde, desde + TAM_PAGINA_BD - 1);
+    if (error) throw error;
+    const pagina = (data ?? []) as T[];
+    out.push(...pagina);
+    if (pagina.length < TAM_PAGINA_BD) break;
+  }
+  return out;
+}
 
-const CONVERSION_HEADERS = ['Conversion', 'Conversión', 'conversion', 'CONVERSION'];
+/** Organizaciones, países, compañías y centros de costo frescos de la base. */
+async function traerResolvedores(): Promise<{ resolvedores: Resolvedores; nombres: Map<string, string> }> {
+  const [orgs, paises, companias, centros] = await Promise.all([
+    traerTodo<Entidad>('organizaciones', 'id,nombre,codigo'),
+    traerTodo<Entidad>('paises', 'id,nombre,codigo'),
+    traerTodo<Entidad>('companias', 'id,nombre,codigo'),
+    traerTodo<Entidad>('centros_costos', 'id,nombre,codigo'),
+  ]);
+  const nombres = new Map<string, string>();
+  for (const e of [...orgs, ...paises, ...companias, ...centros]) nombres.set(e.id, e.nombre);
+  return {
+    resolvedores: {
+      organizacion: crearResolvedor(orgs),
+      pais: crearResolvedor(paises),
+      compania: crearResolvedor(companias),
+      centroCosto: crearResolvedor(centros),
+    },
+    nombres,
+  };
+}
+
+/** Inserta el historial en lotes; si falla, no detiene la operación. */
+async function registrarHistorial(filas: Record<string, unknown>[]) {
+  for (let i = 0; i < filas.length; i += 500) {
+    const { error } = await supabase.from('catalogo_gyp_historico').insert(filas.slice(i, i + 500));
+    if (error) console.warn('No se pudo registrar el historial:', error.message);
+  }
+}
+
+const UBICACION_CAMPOS = new Set(['organizacion_id', 'pais_id', 'compania_id', 'centro_costo_id']);
+
+interface ResultadoMasivo {
+  titulo: string;
+  resumen: string[];
+  errores: string[];
+}
 
 export default function CatalogoPage() {
   const [items, setItems] = useState<CatalogoItem[]>([]);
@@ -61,8 +116,10 @@ export default function CatalogoPage() {
     ccCount: 0,
     duplicates: 0,
     invalidConversion: 0,
+    existentes: 0,
   });
   const [toInsert, setToInsert] = useState<Record<string, unknown>[]>([]);
+  const [resultadoMasivo, setResultadoMasivo] = useState<ResultadoMasivo | null>(null);
   const [searchResults, setSearchResults] = useState<CatalogoItem[] | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -76,24 +133,13 @@ export default function CatalogoPage() {
     setLoading(true);
     setError(null);
     try {
-      const { data, error } = await supabase
-        .from('catalogo_gyp')
-        .select('*')
-        .order('cuenta', { ascending: true })
-        .limit(10000);
-      if (error) {
-        console.error('Supabase error:', error);
-        setError(error.message);
-        addToast('error', `Error al cargar catálogo: ${error.message}`);
-      } else {
-        console.log('Catálogo cargado:', data?.length, 'registros');
-        setItems(data || []);
-      }
+      const data = await traerTodo<CatalogoItem>('catalogo_gyp', '*', ['cuenta']);
+      setItems(data);
     } catch (err) {
-      console.error('Fetch error:', err);
+      console.error('Error al cargar catálogo:', err);
       const msg = (err as Error).message;
       setError(msg);
-      addToast('error', `Error inesperado: ${msg}`);
+      addToast('error', `Error al cargar catálogo: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -146,32 +192,19 @@ export default function CatalogoPage() {
       setImportProgress('Exportando...');
       const xlsx = await import('xlsx');
 
-      // Traer datos y ubicaciones en paralelo
-      const [catRes, orgRes, paisRes, compRes, ccRes] = await Promise.all([
-        supabase.from('catalogo_gyp').select('*').order('cuenta', { ascending: true }),
-        supabase.from('organizaciones').select('id,nombre'),
-        supabase.from('paises').select('id,nombre'),
-        supabase.from('companias').select('id,nombre'),
-        supabase.from('centros_costos').select('id,nombre'),
+      // Traer datos (paginado) y ubicaciones en paralelo
+      const [data, { nombres }] = await Promise.all([
+        traerTodo<Record<string, unknown>>('catalogo_gyp', '*', ['cuenta']),
+        traerResolvedores(),
       ]);
-
-      if (catRes.error) throw catRes.error;
-      const data = catRes.data || [];
       if (data.length === 0) {
         addToast('warning', 'No hay registros en el catálogo para exportar.');
         setImportProgress(null);
         return;
       }
 
-      // Mapas de ID → nombre
-      const orgMap = new Map<string, string>();
-      (orgRes.data || []).forEach((o: { id: string; nombre: string }) => orgMap.set(o.id, o.nombre));
-      const paisMap = new Map<string, string>();
-      (paisRes.data || []).forEach((p: { id: string; nombre: string }) => paisMap.set(p.id, p.nombre));
-      const compMap = new Map<string, string>();
-      (compRes.data || []).forEach((c: { id: string; nombre: string }) => compMap.set(c.id, c.nombre));
-      const ccMap = new Map<string, string>();
-      (ccRes.data || []).forEach((c: { id: string; nombre: string }) => ccMap.set(c.id, c.nombre));
+      // ID → nombre (el mismo nombre que la actualización masiva sabe leer)
+      const nombre = (id: unknown) => (id ? nombres.get(String(id)) || '' : '');
 
       const headers = [
         'ID', 'Linea', 'Grupo', 'Cuenta', 'Descripcion', 'Saldo Normal',
@@ -180,7 +213,7 @@ export default function CatalogoPage() {
         'Organizacion', 'Pais', 'Compania', 'Centro Costo',
       ];
 
-      const rows = data.map((item: Record<string, unknown>) => [
+      const rows = data.map((item) => [
         item.id,
         item.linea ?? '',
         item.grupo ?? '',
@@ -198,10 +231,10 @@ export default function CatalogoPage() {
         item.orden_clasificacion ?? '',
         item.conversion ? 'Si' : 'No',
         item.activa ? 'SI' : 'NO',
-        item.organizacion_id ? orgMap.get(item.organizacion_id as string) || '' : '',
-        item.pais_id ? paisMap.get(item.pais_id as string) || '' : '',
-        item.compania_id ? compMap.get(item.compania_id as string) || '' : '',
-        item.centro_costo_id ? ccMap.get(item.centro_costo_id as string) || '' : '',
+        nombre(item.organizacion_id),
+        nombre(item.pais_id),
+        nombre(item.compania_id),
+        nombre(item.centro_costo_id),
       ]);
 
       const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
@@ -227,230 +260,140 @@ export default function CatalogoPage() {
   };
 
   // --- ACTUALIZACIÓN MASIVA ---
+  // Identifica cada fila por la columna ID (la que trae «Exportar Catálogo»).
+  // Celda vacía o columna ausente = sin cambio. Una fila con algún valor no
+  // válido (ubicación inexistente, Conversión distinta de Si/No…) no se toca y
+  // se informa en el resumen con su número de fila.
   const handleMassUpdate = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file) return;
     setImportProgress('Leyendo archivo para actualizar...');
     try {
       const xlsx = await import('xlsx');
-      const data = await file.arrayBuffer();
-      const workbook = xlsx.read(data, { type: 'array' });
+      const workbook = xlsx.read(await file.arrayBuffer(), { type: 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as FilaExcel[];
 
       if (json.length === 0) {
         addToast('warning', 'El archivo está vacío.');
-        setImportProgress(null);
         return;
       }
 
-      // Normalizar header
-      const normalizeHeader = (h: string) =>
-        String(h).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_\/]+/g, '').trim();
-
-      const rawHeaders = Object.keys(json[0]);
-      const headerMap: Record<string, string> = {};
-      rawHeaders.forEach((h) => { headerMap[normalizeHeader(h)] = h; });
-
-      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
-        for (const v of variants) {
-          const norm = normalizeHeader(v);
-          const originalKey = headerMap[norm];
-          if (originalKey && originalKey in row && row[originalKey] !== '' && row[originalKey] !== null && row[originalKey] !== undefined) {
-            return row[originalKey];
-          }
-        }
-        return undefined;
-      };
-
-      // Verificar que tenga columna ID
-      const idTest = getVal(json[0], 'ID', 'id', 'Id');
-      if (idTest === undefined) {
+      const lector = crearLector(Object.keys(json[0]));
+      if (!lector.tiene('id')) {
         addToast('error', 'El archivo debe tener la columna "ID" para identificar los registros. Usá "Exportar Catálogo" para obtener el archivo con IDs.');
-        setImportProgress(null);
         return;
       }
 
-      // Traer datos actuales de la BD para comparar + ubicaciones para resolver nombres
       setImportProgress('Comparando con datos actuales...');
-      const [currentRes, orgRes2, paisRes2, compRes2, ccRes2] = await Promise.all([
-        supabase.from('catalogo_gyp').select('*'),
-        supabase.from('organizaciones').select('id,nombre,codigo'),
-        supabase.from('paises').select('id,nombre,codigo'),
-        supabase.from('companias').select('id,nombre,codigo'),
-        supabase.from('centros_costos').select('id,nombre,codigo'),
+      const [actualesArr, { resolvedores, nombres }] = await Promise.all([
+        traerTodo<Record<string, unknown>>('catalogo_gyp', '*'),
+        traerResolvedores(),
       ]);
+      const actuales = new Map(actualesArr.map((r) => [String(r.id), r]));
 
-      if (currentRes.error) throw currentRes.error;
+      const errores: string[] = [];
+      const vistos = new Set<string>();
+      let sinId = 0;
+      let sinCambios = 0;
+      const candidatas: { id: string; fila: number; cambios: Record<string, unknown> }[] = [];
 
-      const currentMap = new Map<string, Record<string, unknown>>();
-      (currentRes.data || []).forEach((item: Record<string, unknown>) => {
-        currentMap.set(item.id as string, item);
+      json.forEach((row, i) => {
+        const fila = i + 2; // fila 1 = encabezados
+        const id = String(lector.leer(row, 'id') ?? '').trim();
+        if (!id) { sinId++; return; }
+        const actual = actuales.get(id);
+        if (!actual) { errores.push(`Fila ${fila}: el ID ${id} no existe en el catálogo`); return; }
+        if (vistos.has(id)) { errores.push(`Fila ${fila}: el ID está repetido en el archivo`); return; }
+        vistos.add(id);
+
+        const r = calcularCambiosFila(row, actual, lector, resolvedores);
+        if (r.errores.length > 0) {
+          errores.push(`Fila ${fila} (${String(actual.cuenta)}): ${r.errores.join('; ')}`);
+        } else if (Object.keys(r.cambios).length === 0) {
+          sinCambios++;
+        } else {
+          candidatas.push({ id, fila, cambios: r.cambios });
+        }
       });
 
-      // Función para resolver nombre → ID
-      const resolveEntity = (name: string, entities: { id: string; nombre: string; codigo: string }[]): string | null => {
-        if (!name || !name.trim()) return null;
-        const norm = name.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        const found = entities.find((e) =>
-          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm ||
-          e.codigo.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === norm
-        );
-        if (found) return found.id;
-        // Búsqueda parcial
-        const partial = entities.find((e) =>
-          e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(norm) ||
-          norm.includes(e.nombre.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
-        );
-        return partial?.id || null;
-      };
+      // La base no impide duplicados: se revisa aquí que ningún cambio de
+      // cuenta / compañía / centro de costo choque con otra fila.
+      const colisiones = detectarColisiones(candidatas, actuales);
+      const aplicar = candidatas.filter((c) => {
+        const motivo = colisiones.get(c.id);
+        if (motivo) errores.push(`Fila ${c.fila}: ${motivo}`);
+        return !motivo;
+      });
 
-      const orgsArr = (orgRes2.data || []) as { id: string; nombre: string; codigo: string }[];
-      const paisesArr = (paisRes2.data || []) as { id: string; nombre: string; codigo: string }[];
-      const compArr = (compRes2.data || []) as { id: string; nombre: string; codigo: string }[];
-      const ccArr = (ccRes2.data || []) as { id: string; nombre: string; codigo: string }[];
+      let actualizadas = 0;
+      const historial: Record<string, unknown>[] = [];
+      if (aplicar.length > 0) {
+        setImportProgress(`Actualizando 0 de ${aplicar.length}...`);
+        const valorLegible = (campo: string, v: unknown) =>
+          UBICACION_CAMPOS.has(campo) ? (v ? nombres.get(String(v)) ?? String(v) : '-') : String(v ?? '-');
 
-      // Campos editables que se comparan
-      const editableFields = [
-        { excel: ['Linea', 'linea', 'LINEA'], db: 'linea', type: 'number' },
-        { excel: ['Grupo', 'grupo', 'GRUPO'], db: 'grupo', type: 'number' },
-        { excel: ['Cuenta', 'cuenta', 'CUENTA'], db: 'cuenta', type: 'string' },
-        { excel: ['Descripcion', 'descripcion', 'DESCRIPCION'], db: 'descripcion', type: 'string' },
-        { excel: ['Saldo Normal', 'saldo_normal', 'SaldoNormal'], db: 'saldo_normal', type: 'string' },
-        { excel: ['Comercializadora', 'comercializadora', 'COMERCIALIZADORA'], db: 'comercializadora', type: 'string' },
-        { excel: ['Balance_GyP', 'Balance GyP', 'balance_gyp', 'BalanceGyP'], db: 'balance_gyp', type: 'string' },
-        { excel: ['Clasificacion', 'clasificacion', 'CLASIFICACION'], db: 'clasificacion', type: 'string' },
-        { excel: ['Clasificacion 1', 'Clasificacion1', 'clasificacion_1'], db: 'clasificacion_1', type: 'string' },
-        { excel: ['Clasificacion 2', 'Clasificacion2', 'clasificacion_2'], db: 'clasificacion_2', type: 'string' },
-        { excel: ['Clasificacion Combinado 1', 'clasificacion_combinado_1', 'ClasificacionCombinado1'], db: 'clasificacion_combinado_1', type: 'string' },
-        { excel: ['Clasificacion Combinado 2', 'clasificacion_combinado_2', 'ClasificacionCombinado2'], db: 'clasificacion_combinado_2', type: 'string' },
-        { excel: ['Clasificacion Combinado 3', 'clasificacion_combinado_3', 'ClasificacionCombinado3'], db: 'clasificacion_combinado_3', type: 'string' },
-        { excel: ['Orden Clasificacion', 'orden_clasificacion', 'OrdenClasificacion'], db: 'orden_clasificacion', type: 'number' },
-        { excel: ['Activa', 'activa', 'ACTIVA'], db: 'activa', type: 'boolean' },
+        await enParalelo(
+          aplicar,
+          8,
+          async (c) => {
+            // `.select` para saber si la fila se actualizó de verdad: si una
+            // política de la base lo impide, Supabase no devuelve error.
+            const { data, error } = await supabase
+              .from('catalogo_gyp')
+              .update(c.cambios)
+              .eq('id', c.id)
+              .select('id');
+            if (error) {
+              errores.push(`Fila ${c.fila}: ${error.message}`);
+              return;
+            }
+            if (!data || data.length === 0) {
+              errores.push(`Fila ${c.fila}: la base no actualizó la fila (revisá permisos)`);
+              return;
+            }
+            actualizadas++;
+            const actual = actuales.get(c.id)!;
+            const cuenta = String(c.cambios.cuenta ?? actual.cuenta);
+            historial.push({
+              catalogo_id: c.id,
+              cuenta,
+              descripcion: String(c.cambios.descripcion ?? actual.descripcion ?? ''),
+              accion: 'actualizacion',
+              cambios: Object.entries(c.cambios)
+                .map(([campo, v]) => `${campo}: '${valorLegible(campo, actual[campo])}' → '${valorLegible(campo, v)}'`)
+                .join('; '),
+              resumen: `Cuenta ${cuenta} actualizada (actualización masiva)`,
+            });
+          },
+          (hechos) => {
+            if (hechos % 25 === 0 || hechos === aplicar.length) {
+              setImportProgress(`Actualizando ${hechos} de ${aplicar.length}...`);
+            }
+          },
+        );
+        await registrarHistorial(historial);
+      }
+
+      errores.sort((a, b) => Number(a.match(/\d+/)?.[0] ?? 0) - Number(b.match(/\d+/)?.[0] ?? 0));
+      const resumen = [
+        `${actualizadas} filas actualizadas`,
+        `${sinCambios} sin cambios`,
+        ...(sinId > 0 ? [`${sinId} filas sin ID (omitidas)`] : []),
+        ...(errores.length > 0 ? [`${errores.length} filas no se actualizaron (ver detalle)`] : []),
       ];
-
-      let updated = 0;
-      let skipped = 0;
-      let noChanges = 0;
-      let errors = 0;
-      let invalidConversion = 0;
-      const BATCH_SIZE = 100;
-      const updates: { id: string; changes: Record<string, unknown> }[] = [];
-
-      for (const row of json) {
-        const id = String(getVal(row, 'ID', 'id', 'Id') || '').trim();
-        if (!id) { skipped++; continue; }
-
-        const current = currentMap.get(id);
-        if (!current) { skipped++; continue; }
-
-        // Conversión: solo «Si» / «No». Celda vacía = no se toca.
-        // Un valor distinto deja la fila entera sin actualizar.
-        const conversionVal = parseConversion(getVal(row, ...CONVERSION_HEADERS));
-        if (conversionVal === null) { invalidConversion++; continue; }
-
-        const changes: Record<string, unknown> = {};
-
-        if (conversionVal !== undefined && Boolean(current.conversion) !== conversionVal) {
-          changes.conversion = conversionVal;
-        }
-
-        for (const field of editableFields) {
-          const excelVal = getVal(row, ...field.excel);
-          if (excelVal === undefined) continue;
-
-          let newVal: unknown;
-          let oldVal = current[field.db];
-
-          if (field.type === 'number') {
-            newVal = excelVal === '' || excelVal === null ? null : Number(excelVal);
-            if (newVal !== null && isNaN(newVal as number)) newVal = null;
-          } else if (field.type === 'boolean') {
-            const s = String(excelVal).toLowerCase().trim();
-            newVal = s === 'si' || s === 'sí' || s === 'true' || s === '1' || s === 'yes';
-          } else {
-            newVal = String(excelVal).trim() || null;
-          }
-
-          const oldNorm = oldVal === null || oldVal === undefined ? null : field.type === 'number' ? Number(oldVal) : field.type === 'boolean' ? Boolean(oldVal) : String(oldVal).trim();
-          const newNorm = newVal === null ? null : field.type === 'number' ? Number(newVal) : field.type === 'boolean' ? Boolean(newVal) : String(newVal).trim();
-
-          if (String(oldNorm ?? '') !== String(newNorm ?? '')) {
-            changes[field.db] = newVal;
-          }
-        }
-
-        // Resolver ubicaciones por nombre → ID
-        const orgName = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION') ?? '').trim();
-        const paisName = String(getVal(row, 'Pais', 'pais', 'PAIS', 'País') ?? '').trim();
-        const compName = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Compañia', 'Compañía') ?? '').trim();
-        const ccName = String(getVal(row, 'Centro Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'Centro de Costo') ?? '').trim();
-
-        const newOrgId = resolveEntity(orgName, orgsArr);
-        const newPaisId = resolveEntity(paisName, paisesArr);
-        const newCompId = resolveEntity(compName, compArr);
-        const newCcId = resolveEntity(ccName, ccArr);
-
-        if (String(current.organizacion_id ?? '') !== String(newOrgId ?? '')) changes.organizacion_id = newOrgId;
-        if (String(current.pais_id ?? '') !== String(newPaisId ?? '')) changes.pais_id = newPaisId;
-        if (String(current.compania_id ?? '') !== String(newCompId ?? '')) changes.compania_id = newCompId;
-        if (String(current.centro_costo_id ?? '') !== String(newCcId ?? '')) changes.centro_costo_id = newCcId;
-
-        if (Object.keys(changes).length > 0) {
-          updates.push({ id, changes });
-        } else {
-          noChanges++;
-        }
+      if (errores.length > 0) {
+        setResultadoMasivo({ titulo: 'Resultado de la actualización masiva', resumen, errores });
+      } else {
+        addToast(actualizadas > 0 ? 'success' : 'info', resumen.join(', '));
       }
-
-      const conversionMsg = invalidConversion > 0
-        ? `${invalidConversion} filas no se actualizaron: Conversión solo acepta "Si" o "No"`
-        : '';
-
-      if (updates.length === 0) {
-        addToast(
-          invalidConversion > 0 ? 'warning' : 'info',
-          `No se encontraron cambios. ${noChanges} registros sin modificaciones, ${skipped} omitidos.${conversionMsg ? ` ${conversionMsg}.` : ''}`,
-        );
-        setImportProgress(null);
-        return;
-      }
-
-      // Ejecutar updates en batches
-      setImportProgress(`Actualizando ${updates.length} registros...`);
-      for (let i = 0; i < updates.length; i += BATCH_SIZE) {
-        const batch = updates.slice(i, i + BATCH_SIZE);
-        setImportProgress(`Actualizando ${Math.min(i + BATCH_SIZE, updates.length)} de ${updates.length}...`);
-
-        for (const item of batch) {
-          const { error } = await supabase
-            .from('catalogo_gyp')
-            .update(item.changes)
-            .eq('id', item.id);
-
-          if (error) {
-            errors++;
-            console.error(`Error actualizando ${item.id}:`, error.message);
-          } else {
-            updated++;
-          }
-        }
-      }
-
-      const msgs: string[] = [];
-      if (updated > 0) msgs.push(`${updated} actualizados`);
-      if (noChanges > 0) msgs.push(`${noChanges} sin cambios`);
-      if (skipped > 0) msgs.push(`${skipped} omitidos`);
-      if (errors > 0) msgs.push(`${errors} errores`);
-      if (conversionMsg) msgs.push(conversionMsg);
-
-      addToast(errors > 0 || invalidConversion > 0 ? 'warning' : 'success', msgs.join(', '));
-      fetchData();
+      if (actualizadas > 0) fetchData();
     } catch (err) {
       addToast('error', 'Error al actualizar: ' + (err as Error).message);
     } finally {
       setImportProgress(null);
-      e.target.value = '';
+      input.value = '';
     }
   };
 
@@ -496,19 +439,25 @@ export default function CatalogoPage() {
         '',
         1,
         'No',
-        'OLO',
-        'Colombia',
-        'BEVAL',
-        'Cofersa Central',
+        // Ubicaciones reales del sistema para que el ejemplo sea válido.
+        organizaciones[0]?.nombre ?? '',
+        paises.find((p) => p.id === companias[0]?.pais_id)?.nombre ?? paises[0]?.nombre ?? '',
+        companias[0]?.nombre ?? '',
+        centrosCostos[0]?.nombre ?? '',
       ];
       const ws = xlsx.utils.aoa_to_sheet([headers, ejemplo]);
       const wb = xlsx.utils.book_new();
       xlsx.utils.book_append_sheet(wb, ws, 'Catalogo GYP');
       const instrucciones = xlsx.utils.aoa_to_sheet([
         ['Columna', 'Valores permitidos'],
+        ['Cuenta, Descripcion', 'Obligatorias. Una fila sin ellas se omite.'],
+        ['Compania, Centro Costo', 'Obligatorias. Nombre o código exacto, como aparece en Configuración.'],
+        ['Organizacion, Pais', 'Opcionales. Si se llenan, deben existir con ese nombre o código exacto.'],
         ['Conversion', 'Si o No. Si se deja vacía se carga como No.'],
+        ['Carga masiva', 'Solo crea cuentas nuevas: si ya existe la misma cuenta en esa compañía y centro de costo, la fila no se carga.'],
+        ['Actualizar Masivo', 'Use el archivo de «Exportar Catálogo» (columna ID). Celda vacía = sin cambio.'],
       ]);
-      instrucciones['!cols'] = [{ wch: 16 }, { wch: 50 }];
+      instrucciones['!cols'] = [{ wch: 24 }, { wch: 100 }];
       xlsx.utils.book_append_sheet(wb, instrucciones, 'Instrucciones');
       const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
       const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -525,264 +474,123 @@ export default function CatalogoPage() {
     }
   };
 
-  // --- UTILIDADES DE MATCHING ROBUSTO ---
-  // Normaliza para comparar texto (elimina tildes, espacios extra, mayúsculas)
-  const normalizeText = (text: string): string =>
-    String(text)
-      .toLowerCase()
-      .trim()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ');
-
-  const findEntity = <T extends { nombre: string; codigo: string; id: string }>(
-    searchTerm: string,
-    entities: T[],
-  ): T | null => {
-    if (!searchTerm || !String(searchTerm).trim()) return null;
-    const norm = normalizeText(searchTerm);
-    if (!norm) return null;
-
-    // 1. Exacto por nombre normalizado
-    let found = entities.find((e) => normalizeText(e.nombre) === norm);
-    if (found) return found;
-
-    // 2. Exacto por código normalizado
-    found = entities.find((e) => normalizeText(e.codigo) === norm);
-    if (found) return found;
-
-    // 3. La entidad contiene el término buscado
-    found = entities.find(
-      (e) =>
-        normalizeText(e.nombre).includes(norm) ||
-        normalizeText(e.codigo).includes(norm),
-    );
-    if (found) return found;
-
-    // 4. El término buscado contiene el nombre/código de la entidad
-    found = entities.find(
-      (e) =>
-        norm.includes(normalizeText(e.nombre)) ||
-        norm.includes(normalizeText(e.codigo)),
-    );
-    if (found) return found;
-
-    return null;
-  };
-
-  // --- CARGADOR DE EXCEL ---
+  // --- CARGADOR DE EXCEL (carga masiva) ---
+  // Solo crea cuentas nuevas. La llave es cuenta × compañía × centro de costo:
+  // si ya existe en el catálogo (o se repite en el archivo) la fila no se
+  // inserta, porque la base no tiene restricción única y quedaría duplicada.
+  // Para cambiar filas existentes está «Actualizar Masivo».
   const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file) return;
     setImportProgress('Leyendo archivo...');
     try {
-      // Cargar ubicaciones frescas desde Supabase para garantizar que estén disponibles
-      setImportProgress('Cargando catálogos...');
-      const [orgRes, paisesRes, compRes, centrosRes] = await Promise.all([
-        supabase.from('organizaciones').select('id,codigo,nombre'),
-        supabase.from('paises').select('id,codigo,nombre'),
-        supabase.from('companias').select('id,codigo,nombre,pais_id'),
-        supabase.from('centros_costos').select('id,codigo,nombre,pais_id,compania_id'),
-      ]);
-      const orgsData = (orgRes.data || []) as { id: string; codigo: string; nombre: string }[];
-      const paisesData = (paisesRes.data || []) as { id: string; codigo: string; nombre: string }[];
-      const compData = (compRes.data || []) as { id: string; codigo: string; nombre: string; pais_id: string }[];
-      const centrosData = (centrosRes.data || []) as { id: string; codigo: string; nombre: string; pais_id: string; compania_id: string | null }[];
-
-      setImportProgress('Leyendo archivo...');
       const xlsx = await import('xlsx');
-      const data = await file.arrayBuffer();
-      const workbook = xlsx.read(data, { type: 'array' });
+      const workbook = xlsx.read(await file.arrayBuffer(), { type: 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
 
-      // 1. Leer headers EXACTOS de la primera fila del Excel
+      // Encabezados exactos de la primera fila
       const range = xlsx.utils.decode_range(sheet['!ref'] || 'A1');
       const headerRow: string[] = [];
       for (let C = range.s.c; C <= range.e.c; ++C) {
         const cell = sheet[xlsx.utils.encode_cell({ r: range.s.r, c: C })];
-        headerRow.push(cell ? String(cell.v || '') : '');
+        headerRow.push(cell ? String(cell.v ?? '') : '');
       }
       const rawHeaders = headerRow.filter((h) => h.trim() !== '');
       setPreviewHeaders(rawHeaders);
-      console.log('Headers exactos del Excel:', rawHeaders);
 
-      // 2. Leer datos con defval
-      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
-
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as FilaExcel[];
       if (json.length === 0) {
         addToast('warning', 'El archivo está vacío o no tiene datos.');
         return;
       }
 
-      // 3. Normalizador de headers — elimina tildes, espacios, guiones, guiones bajos y barras
-      const normalizeHeader = (h: string) =>
-        String(h)
-          .toLowerCase()
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '')   // quita tildes
-          .replace(/[\s\-_\/]+/g, '')         // quita separadores
-          .trim();
-
-      // Mapeo de variantes normalizadas a los headers exactos
-      const headerMap: Record<string, string> = {};
-      rawHeaders.forEach((h) => {
-        const norm = normalizeHeader(h);
-        headerMap[norm] = h;
-      });
-      console.log('Mapeo de headers:', headerMap);
-
-      // 4. Buscador robusto
-      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
-        for (const v of variants) {
-          const norm = normalizeHeader(v);
-          const originalKey = headerMap[norm];
-          if (originalKey && originalKey in row && row[originalKey] !== '' && row[originalKey] !== null && row[originalKey] !== undefined) {
-            return row[originalKey];
-          }
-        }
-        return '';
-      };
-
-      // 5. Validar que existe la columna Cuenta
-      const cuentaTest = getVal(json[0], 'Cuenta', 'cuenta', 'CUENTA');
-      if (cuentaTest === '') {
-        addToast('warning', `No se encontró la columna 'Cuenta'. Headers: ${rawHeaders.join(', ')}`);
+      const lector = crearLector(rawHeaders);
+      if (!lector.tiene('cuenta')) {
+        addToast('warning', `No se encontró la columna 'Cuenta'. Encabezados: ${rawHeaders.join(', ')}`);
         return;
       }
+
+      setImportProgress('Cargando catálogos...');
+      const [{ resolvedores }, existentesArr] = await Promise.all([
+        traerResolvedores(),
+        traerTodo<Record<string, unknown>>('catalogo_gyp', 'id,cuenta,compania_id,centro_costo_id'),
+      ]);
+      const llavesExistentes = new Set(existentesArr.map(llaveCatalogo));
 
       let skipped = 0;
       let invalidNumbers = 0;
       let missingUbicacion = 0;
       let paisCount = 0;
       let orgCount = 0;
-      let duplicates = 0;
       let ccCount = 0;
+      let duplicates = 0;
       let invalidConversion = 0;
+      let existentes = 0;
       const parsed: ImportPreviewRow[] = [];
       const batchToInsert: Record<string, unknown>[] = [];
-      // Detección de duplicados DENTRO del lote
-      const seenKeys = new Set<string>();
+      const llavesArchivo = new Set<string>();
 
       for (const row of json) {
-        const cuenta = String(getVal(row, 'Cuenta', 'cuenta', 'CUENTA', 'Codigo', 'codigo', 'CODIGO', 'Code', 'CODE') || '').trim();
-        const descripcion = String(getVal(row, 'Descripcion', 'descripcion', 'DESCRIPCION', 'Desc', 'DESC', 'Nombre', 'NOMBRE', 'nombre') || '').trim();
-        if (!cuenta || !descripcion) {
+        const p = parsearFilaImportacion(row, lector, resolvedores);
+        if (!p) {
           skipped++;
           continue;
         }
+        const { registro, ubicaciones } = p;
+        const errores = [...p.errores];
 
-        const lineaRaw = getVal(row, 'Linea', 'linea', 'LINEA', 'Line', 'LINE', 'Línea');
-        const grupoRaw = getVal(row, 'Grupo', 'grupo', 'GRUPO', 'Group', 'GROUP');
-        const saldoNormal = String(getVal(row, 'Saldo Normal', 'SaldoNormal', 'saldo_normal', 'Saldo', 'SALDO', 'Saldo_Normal') || '').trim();
-        const comercializadora = String(getVal(row, 'Comercializadora', 'comercializadora', 'COMERCIALIZADORA', 'Comercial', 'COMERCIAL') || '').trim();
-        const balanceGyp = String(getVal(row, 'Balance / GyP', 'Balance_GyP', 'Balance GyP', 'BalanceGyP', 'balance_gyp', 'Balance', 'BALANCE', 'BalanceGYP', 'Balance_GYP') || '').trim();
-        const clasificacion = String(getVal(row, 'Clasificacion', 'clasificacion', 'CLASIFICACION', 'Clasificación', 'Clase', 'CLASE', 'Categoria', 'CATEGORIA') || '').trim();
-        const clasificacion1 = String(getVal(row, 'Clasificacion 1', 'Clasificacion1', 'clasificacion_1', 'CLASIFICACION_1', 'Clasificación 1', 'Sub Clasificacion', 'Subclasificacion') || '').trim();
-        const clasificacion2 = String(getVal(row, 'Clasificacion 2', 'Clasificacion2', 'clasificacion_2', 'CLASIFICACION_2', 'Clasificación 2', 'Sub Clasificacion 2', 'Subclasificacion 2') || '').trim();
-        const clasificacionCombinado1 = String(getVal(row, 'Clasificacion Combinado 1', 'clasificacion_combinado_1', 'ClasificacionCombinado1', 'CLASIFICACION_COMBINADO_1') || '').trim();
-        const clasificacionCombinado2 = String(getVal(row, 'Clasificacion Combinado 2', 'clasificacion_combinado_2', 'ClasificacionCombinado2', 'CLASIFICACION_COMBINADO_2') || '').trim();
-        const clasificacionCombinado3 = String(getVal(row, 'Clasificacion Combinado 3', 'clasificacion_combinado_3', 'ClasificacionCombinado3', 'CLASIFICACION_COMBINADO_3') || '').trim();
-        const ordenRaw = getVal(row, 'Orden Clasificacion', 'OrdenClasificacion', 'orden_clasificacion', 'Orden', 'ORDEN', 'ORDER', 'Orden_Clasificacion', 'Orden Clasificación');
+        if (ubicaciones.pais.id) paisCount++;
+        if (ubicaciones.organizacion.id) orgCount++;
+        if (ubicaciones.centroCosto.id) ccCount++;
+        if (Object.values(ubicaciones).some((u) => u.texto && !u.id)) missingUbicacion++;
+        if (p.avisos.length > 0) invalidNumbers++;
+        if (p.conversion === null) invalidConversion++;
 
-        // Ubicación con matching ROBUSTO
-        const orgNombre = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION', 'Organización', 'Org', 'ORG') || '').trim();
-        const paisNombre = String(getVal(row, 'Pais', 'pais', 'PAIS', 'País', 'Country', 'COUNTRY') || '').trim();
-        const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Compañia', 'Compañía', 'Cia', 'CIA', 'Company', 'COMPANY') || '').trim();
-        const ccNombre = String(getVal(row, 'Centro de Costo', 'Centro Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'CC', 'cc', 'Cost Center', 'COSTCENTER', 'Centro_Costo', 'centrodecosto') || '').trim();
-
-        // Ubicación con matching ROBUSTO contra los datos frescos de Supabase
-        const orgMatch = findEntity(orgNombre, orgsData);
-        const paisMatch = findEntity(paisNombre, paisesData);
-        const ciaMatch = findEntity(ciaNombre, compData);
-        const ccMatch = findEntity(ccNombre, centrosData);
-
-        const orgId = orgMatch?.id ?? null;
-        const paisId = paisMatch?.id ?? null;
-        const ciaId = ciaMatch?.id ?? null;
-        const ccId = ccMatch?.id ?? null;
-
-        // Contadores de estadísticas
-        if (paisId) paisCount++;
-        else if (paisNombre) missingUbicacion++;
-        if (orgId) orgCount++;
-        if (ccId) ccCount++;
-
-        // Conversión: solo «Si» / «No». Vacía = «No».
-        const conversionRaw = String(getVal(row, ...CONVERSION_HEADERS) ?? '').trim();
-        const conversionVal = parseConversion(conversionRaw);
-
-        // Sin detección de duplicados — el upsert en BD maneja conflictos
-        let rowError: string | null = null;
-        let rowValido = true;
-        if (conversionVal === null) {
-          invalidConversion++;
-          rowValido = false;
-          rowError = `Conversión "${conversionRaw}" no válida (solo Si o No)`;
-        }
-        const conversion = conversionVal ?? false;
-
-        const safeNumber = (raw: unknown) => {
-          if (raw === '' || raw === null || raw === undefined) return null;
-          const n = Number(raw);
-          if (Number.isNaN(n)) {
-            invalidNumbers++;
-            return null;
+        if (errores.length === 0) {
+          const llave = llaveCatalogo(registro);
+          if (llavesExistentes.has(llave)) {
+            existentes++;
+            errores.push('Ya existe en el catálogo (usá Actualizar Masivo para cambiarla)');
+          } else if (llavesArchivo.has(llave)) {
+            duplicates++;
+            errores.push('Repetida en el archivo (misma cuenta, compañía y centro de costo)');
+          } else {
+            llavesArchivo.add(llave);
           }
-          return n;
-        };
-
-        const rowData: Record<string, unknown> = {
-          linea: safeNumber(lineaRaw),
-          grupo: safeNumber(grupoRaw),
-          cuenta,
-          descripcion,
-          saldo_normal: saldoNormal,
-          comercializadora,
-          balance_gyp: balanceGyp,
-          clasificacion,
-          clasificacion_1: clasificacion1,
-          clasificacion_2: clasificacion2,
-          clasificacion_combinado_1: clasificacionCombinado1 || null,
-          clasificacion_combinado_2: clasificacionCombinado2 || null,
-          clasificacion_combinado_3: clasificacionCombinado3 || null,
-          orden_clasificacion: safeNumber(ordenRaw),
-          conversion,
-          activa: true,
-          organizacion_id: orgId,
-          pais_id: paisId,
-          compania_id: ciaId,
-          centro_costo_id: ccId,
-        };
-
-        if (rowValido) {
-          batchToInsert.push(rowData);
         }
+
+        const valido = errores.length === 0;
+        if (valido) batchToInsert.push(registro);
 
         parsed.push({
-          cuenta,
-          descripcion,
-          clasificacion,
-          clasificacion_1: clasificacion1,
-          clasificacion_2: clasificacion2,
-          linea: safeNumber(lineaRaw),
-          grupo: safeNumber(grupoRaw),
-          saldo_normal: saldoNormal,
-          comercializadora,
-          balance_gyp: balanceGyp,
-          orden_clasificacion: safeNumber(ordenRaw),
-          conversion: conversionVal === null ? null : conversion,
-          pais_nombre: paisNombre,
-          pais_id: paisId,
-          org_nombre: orgNombre,
-          org_id: orgId,
-          cia_nombre: ciaNombre,
-          cia_id: ciaId,
-          cc_nombre: ccNombre,
-          cc_id: ccId,
-          valido: rowValido,
-          error: rowError,
+          cuenta: String(registro.cuenta),
+          descripcion: String(registro.descripcion),
+          clasificacion: String(registro.clasificacion ?? ''),
+          clasificacion_1: String(registro.clasificacion_1 ?? ''),
+          clasificacion_2: String(registro.clasificacion_2 ?? ''),
+          linea: registro.linea as number | null,
+          grupo: registro.grupo as number | null,
+          saldo_normal: String(registro.saldo_normal ?? ''),
+          comercializadora: String(registro.comercializadora ?? ''),
+          balance_gyp: String(registro.balance_gyp ?? ''),
+          orden_clasificacion: registro.orden_clasificacion as number | null,
+          conversion: p.conversion,
+          pais_nombre: ubicaciones.pais.texto,
+          pais_id: ubicaciones.pais.id,
+          org_nombre: ubicaciones.organizacion.texto,
+          org_id: ubicaciones.organizacion.id,
+          cia_nombre: ubicaciones.compania.texto,
+          cia_id: ubicaciones.compania.id,
+          cc_nombre: ubicaciones.centroCosto.texto,
+          cc_id: ubicaciones.centroCosto.id,
+          valido,
+          error: valido ? (p.avisos.length > 0 ? p.avisos.join('; ') : null) : errores.join('; '),
         });
       }
+
+      // Primero las filas con problema, para que se vean en la vista previa.
+      parsed.sort((a, b) => Number(a.valido) - Number(b.valido));
 
       setPreviewData(parsed);
       setPreviewStats({
@@ -795,15 +603,15 @@ export default function CatalogoPage() {
         ccCount,
         duplicates,
         invalidConversion,
+        existentes,
       });
       setToInsert(batchToInsert);
-      setImportProgress(null);
       setPreviewOpen(true);
     } catch (err) {
       addToast('error', 'Error al importar: ' + (err as Error).message);
-      setImportProgress(null);
     } finally {
-      e.target.value = '';
+      setImportProgress(null);
+      input.value = '';
     }
   };
 
@@ -815,31 +623,47 @@ export default function CatalogoPage() {
     setImportProgress('Importando...');
     try {
       const BATCH_SIZE = 200;
-      let imported = 0;
-      let failed = 0;
-      let lastError: string | null = null;
+      const creadas: { id: string; cuenta: string; descripcion: string }[] = [];
+      const errores: string[] = [];
+
+      const insertar = (filas: Record<string, unknown>[]) =>
+        supabase.from('catalogo_gyp').insert(filas).select('id,cuenta,descripcion');
 
       for (let i = 0; i < toInsert.length; i += BATCH_SIZE) {
         const batch = toInsert.slice(i, i + BATCH_SIZE);
         setImportProgress(`Importando ${Math.min(i + batch.length, toInsert.length)} de ${toInsert.length} registros...`);
-        const { error } = await supabase.from('catalogo_gyp').insert(batch);
-        if (error) {
-          failed += batch.length;
-          lastError = error.message;
-          console.error('Error en batch:', error);
-        } else {
-          imported += batch.length;
+        const { data, error } = await insertar(batch);
+        if (!error) {
+          creadas.push(...((data ?? []) as typeof creadas));
+          continue;
+        }
+        // Un lote falla entero si una sola fila falla: se reintenta fila por
+        // fila para guardar las buenas y decir cuál falló.
+        for (const fila of batch) {
+          const r = await insertar([fila]);
+          if (r.error) errores.push(`Cuenta ${String(fila.cuenta)}: ${r.error.message}`);
+          else creadas.push(...((r.data ?? []) as typeof creadas));
         }
       }
 
-      const mensajes: string[] = [];
-      if (imported > 0) mensajes.push(`${imported} importadas/actualizadas`);
-      if (failed > 0) mensajes.push(`${failed} fallaron`);
+      await registrarHistorial(
+        creadas.map((c) => ({
+          catalogo_id: c.id,
+          cuenta: c.cuenta,
+          descripcion: c.descripcion,
+          accion: 'creacion',
+          resumen: `Cuenta ${c.cuenta} creada (carga masiva)`,
+        })),
+      );
 
-      if (failed > 0) {
-        addToast('error', mensajes.join('. ') + (lastError ? `. Error: ${lastError}` : ''));
+      if (errores.length > 0) {
+        setResultadoMasivo({
+          titulo: 'Resultado de la carga masiva',
+          resumen: [`${creadas.length} cuentas creadas`, `${errores.length} fallaron (ver detalle)`],
+          errores,
+        });
       } else {
-        addToast('success', mensajes.join('. ') || 'Importación completada');
+        addToast('success', `${creadas.length} cuentas creadas`);
       }
       setPreviewOpen(false);
       setPreviewData([]);
@@ -862,7 +686,7 @@ export default function CatalogoPage() {
         const cambiosList: string[] = [];
         const campos = ['linea', 'grupo', 'cuenta', 'descripcion', 'saldo_normal', 'comercializadora', 'balance_gyp', 'clasificacion', 'clasificacion_1', 'clasificacion_2', 'orden_clasificacion', 'conversion'];
         campos.forEach((campo) => {
-          const oldVal = (editing as Record<string, unknown>)[campo];
+          const oldVal = (editing as unknown as Record<string, unknown>)[campo];
           const newVal = formData[campo];
           if (String(oldVal ?? '') !== String(newVal ?? '')) {
             cambiosList.push(`${campo}: '${oldVal ?? '-'}' → '${newVal ?? '-'}'`);
@@ -1538,11 +1362,49 @@ export default function CatalogoPage() {
         ccCount={previewStats.ccCount}
         duplicates={previewStats.duplicates}
         invalidConversion={previewStats.invalidConversion}
+        existentes={previewStats.existentes}
         loading={!!importProgress}
         paises={paises}
         companias={companias}
         centrosCostos={centrosCostos}
       />
+
+      <Modal
+        isOpen={!!resultadoMasivo}
+        onClose={() => setResultadoMasivo(null)}
+        title={resultadoMasivo?.titulo ?? ''}
+        size="xl"
+      >
+        {resultadoMasivo && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {resultadoMasivo.resumen.map((r) => (
+                <span key={r} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700">
+                  {r}
+                </span>
+              ))}
+            </div>
+            <div>
+              <p className="text-sm font-medium text-slate-700 mb-2">
+                Filas que no se aplicaron ({resultadoMasivo.errores.length}). Corregilas en el Excel y volvé a subirlo:
+              </p>
+              <ul className="max-h-[50vh] overflow-y-auto rounded-lg border border-red-100 bg-red-50 divide-y divide-red-100 text-sm text-red-800">
+                {resultadoMasivo.errores.map((err, i) => (
+                  <li key={i} className="px-3 py-1.5">{err}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setResultadoMasivo(null)}
+                className="rounded-lg px-4 py-2 text-sm font-medium bg-slate-800 text-white hover:bg-slate-900"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <ProgressModal
         isOpen={!!importProgress}
